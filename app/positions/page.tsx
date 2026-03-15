@@ -1,7 +1,6 @@
 'use client';
 import { useEffect, useState } from 'react';
-
-const BASE = process.env.NEXT_PUBLIC_BASE_PATH || '';
+import { loadState, AppState } from '@/lib/store';
 
 function SkeletonRow({ cols }: { cols: number }) {
   return (
@@ -14,13 +13,11 @@ function SkeletonRow({ cols }: { cols: number }) {
 }
 
 export default function Positions() {
-  const [data, setData] = useState<any>(null);
-
-  const fetchData = () => fetch(`${BASE}/data.json`).then(r => r.json()).then(setData).catch(console.error);
+  const [data, setData] = useState<AppState | null>(null);
 
   useEffect(() => {
-    fetchData();
-    const i = setInterval(fetchData, 30000);
+    setData(loadState());
+    const i = setInterval(() => setData(loadState()), 5000);
     return () => clearInterval(i);
   }, []);
 
@@ -83,9 +80,10 @@ export default function Positions() {
                       </svg>
                     </div>
                     <p className="text-sm text-gray-600">No open positions</p>
+                    <p className="text-[10px] text-gray-700 mt-1">Positions will appear when the scanner finds opportunities</p>
                   </td>
                 </tr>
-              ) : open.map((pos: any, i: number) => (
+              ) : open.map((pos, i) => (
                 <tr
                   key={pos.id}
                   className="border-b border-white/[0.03] animate-fade-in-up"
@@ -142,9 +140,10 @@ export default function Positions() {
                 <tr>
                   <td colSpan={5} className="text-center py-12">
                     <p className="text-sm text-gray-600">No closed positions yet</p>
+                    <p className="text-[10px] text-gray-700 mt-1">Positions auto-close after 1 hour</p>
                   </td>
                 </tr>
-              ) : closed.map((pos: any, i: number) => (
+              ) : closed.map((pos, i) => (
                 <tr
                   key={pos.id}
                   className="border-b border-white/[0.03] animate-fade-in-up"

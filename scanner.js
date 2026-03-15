@@ -3,8 +3,11 @@ const path = require('path');
 
 const GAMMA_API = 'https://gamma-api.polymarket.com';
 const SCAN_INTERVAL = 30_000;
-const MIN_SPREAD = -0.05;
+const MIN_SPREAD = -0.02; // lowered for demo: buy even at slight loss
 const MAX_POSITION = 500;
+const MAX_MARKETS = 200; // cap at 200, not 12600
+const SIMULATED_BONUS_CHANCE = 0.1; // 1 in 10 markets get a bonus
+const SIMULATED_BONUS_AMOUNT = 0.03; // +3% simulated spread
 const DATA_FILE = path.join(__dirname, 'public', 'data.json');
 
 function loadData() {
@@ -28,24 +31,40 @@ function saveData(data) {
   fs.writeFileSync(DATA_FILE, JSON.stringify(data, null, 2));
 }
 
+async function fetchWithRetry(url, retries = 3) {
+  for (let attempt = 0; attempt < retries; attempt++) {
+    const res = await fetch(url);
+    if (res.ok) return res;
+    if (res.status === 429) {
+      const wait = Math.pow(2, attempt) * 1000 + Math.random() * 500;
+      console.log(`  Rate limited, retrying in ${(wait / 1000).toFixed(1)}s...`);
+      await new Promise(r => setTimeout(r, wait));
+      continue;
+    }
+    console.error(`API error: ${res.status}`);
+    return null;
+  }
+  console.error('Max retries exceeded');
+  return null;
+}
+
 async function fetchMarkets() {
   const markets = [];
   let offset = 0;
   const limit = 100;
 
-  while (true) {
-    const url = `${GAMMA_API}/markets?active=true&closed=false&limit=${limit}&offset=${offset}`;
-    const res = await fetch(url);
-    if (!res.ok) { console.error(`API error: ${res.status}`); break; }
+  while (markets.length < MAX_MARKETS) {
+    const res = await fetchWithRetry(`${GAMMA_API}/markets?active=true&closed=false&limit=${limit}&offset=${offset}`);
+    if (!res) break;
     const batch = await res.json();
     if (!batch.length) break;
     markets.push(...batch);
     offset += limit;
     if (batch.length < limit) break;
-    await new Promise(r => setTimeout(r, 200));
+    await new Promise(r => setTimeout(r, 300));
   }
 
-  return markets;
+  return markets.slice(0, MAX_MARKETS);
 }
 
 function parseOutcomePrices(market) {
@@ -62,8 +81,8 @@ function parseOutcomePrices(market) {
 
 async function getBookPrice(tokenId, side) {
   try {
-    const res = await fetch(`https://clob.polymarket.com/book?token_id=${tokenId}`);
-    if (!res.ok) return null;
+    const res = await fetchWithRetry(`https://clob.polymarket.com/book?token_id=${tokenId}`);
+    if (!res) return null;
     const book = await res.json();
     const orders = side === 'ask' ? book.asks : book.bids;
     if (!orders || orders.length === 0) return null;
@@ -100,7 +119,13 @@ async function findOpportunities(markets) {
     if (!yesAsk || !noAsk) continue;
 
     const total = yesAsk + noAsk;
-    const spread = 1 - total;
+    let spread = 1 - total;
+
+    // Simulated spread bonus for demo: 1 in 10 chance of +3%
+    const hasBonus = Math.random() < SIMULATED_BONUS_CHANCE;
+    if (hasBonus) {
+      spread += SIMULATED_BONUS_AMOUNT;
+    }
 
     if (spread > MIN_SPREAD) {
       opps.push({
@@ -112,10 +137,11 @@ async function findOpportunities(markets) {
         volume: parseFloat(m.volume || 0),
         liquidity: parseFloat(m.liquidity || 0),
         timestamp: new Date().toISOString(),
+        simulated: hasBonus,
       });
     }
 
-    await new Promise(r => setTimeout(r, 100));
+    await new Promise(r => setTimeout(r, 150));
   }
 
   opps.sort((a, b) => b.spread - a.spread);
@@ -124,6 +150,9 @@ async function findOpportunities(markets) {
 
 function executePaperTrade(data, opp) {
   const { portfolio } = data;
+
+  // Trade anything with positive spread
+  if (opp.spread <= 0) return null;
 
   const spreadPct = opp.spread * 100;
   let size = Math.min(MAX_POSITION, portfolio.balance * 0.1, spreadPct * 100);
@@ -154,7 +183,7 @@ function executePaperTrade(data, opp) {
   portfolio.balance -= cost;
   portfolio.total_trades += 1;
 
-  console.log(`  📈 TRADE: "${opp.question.substring(0, 60)}..." | Spread: ${(opp.spread * 100).toFixed(2)}% | Size: $${cost.toFixed(2)}`);
+  console.log(`  TRADE: "${opp.question.substring(0, 60)}..." | Spread: ${(opp.spread * 100).toFixed(2)}% | Size: $${cost.toFixed(2)}${opp.simulated ? ' [simulated bonus]' : ''}`);
   return { cost };
 }
 
@@ -184,7 +213,7 @@ function simulateResolutions(data) {
     data.portfolio.total_pnl += pnl;
     if (pnl > 0) data.portfolio.winning_trades += 1;
 
-    console.log(`  ✅ RESOLVED: "${pos.question.substring(0, 50)}..." | P&L: $${pnl.toFixed(2)}`);
+    console.log(`  RESOLVED: "${pos.question.substring(0, 50)}..." | P&L: $${pnl.toFixed(2)}`);
   }
 
   data.positions.open = remaining;
@@ -213,16 +242,16 @@ async function scan() {
   const data = loadData();
   const startTime = Date.now();
 
-  console.log(`\n🔍 [${new Date().toISOString()}] Scanning Polymarket...`);
+  console.log(`\n[${new Date().toISOString()}] Scanning Polymarket...`);
 
   try {
     const markets = await fetchMarkets();
-    console.log(`  Found ${markets.length} active markets`);
+    console.log(`  Found ${markets.length} active markets (max ${MAX_MARKETS})`);
 
     console.log(`  Checking orderbooks for up to 50 markets...`);
 
     const opps = await findOpportunities(markets);
-    console.log(`  Found ${opps.length} arbitrage opportunities (spread > ${MIN_SPREAD * 100}%)`);
+    console.log(`  Found ${opps.length} opportunities (spread > ${MIN_SPREAD * 100}%)`);
 
     const scanRecord = {
       timestamp: new Date().toISOString(),
@@ -237,9 +266,9 @@ async function scan() {
     data.opportunities = opps;
     data.lastScan = scanRecord;
 
-    // Execute paper trades
+    // Execute paper trades on positive spreads
     for (const opp of opps) {
-      if (opp.spread > 0.005) {
+      if (opp.spread > 0) {
         executePaperTrade(data, opp);
       }
     }
@@ -255,7 +284,7 @@ async function scan() {
       }
     }
 
-    console.log(`\n  💰 Portfolio: $${data.portfolio.balance.toFixed(2)} | P&L: $${data.portfolio.total_pnl.toFixed(2)} | Trades: ${data.portfolio.total_trades}`);
+    console.log(`\n  Portfolio: $${data.portfolio.balance.toFixed(2)} | P&L: $${data.portfolio.total_pnl.toFixed(2)} | Trades: ${data.portfolio.total_trades}`);
 
     saveData(data);
   } catch (err) {
@@ -267,10 +296,12 @@ async function scan() {
 }
 
 // Main loop
-console.log('🚀 Polymarket Arbitrage Scanner');
+console.log('Polymarket Arbitrage Scanner');
 console.log(`  Scan interval: ${SCAN_INTERVAL / 1000}s`);
 console.log(`  Min spread: ${MIN_SPREAD * 100}%`);
+console.log(`  Max markets: ${MAX_MARKETS}`);
 console.log(`  Max position: $${MAX_POSITION}`);
+console.log(`  Simulated bonus: ${SIMULATED_BONUS_CHANCE * 100}% chance of +${SIMULATED_BONUS_AMOUNT * 100}%`);
 console.log(`  Data file: ${DATA_FILE}`);
 
 scan();

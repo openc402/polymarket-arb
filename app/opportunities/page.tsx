@@ -1,17 +1,8 @@
 'use client';
 import { useEffect, useState, useCallback } from 'react';
-
-const GAMMA_API = 'https://gamma-api.polymarket.com';
-
-interface Opportunity {
-  market_id: string;
-  question: string;
-  yes_price: number;
-  no_price: number;
-  spread: number;
-  volume: number;
-  liquidity: number;
-}
+import { loadState } from '@/lib/store';
+import { runScan } from '@/lib/scanner';
+import type { Opportunity } from '@/lib/store';
 
 function SkeletonRow() {
   return (
@@ -36,71 +27,29 @@ export default function Opportunities() {
   const fetchLive = useCallback(async () => {
     try {
       setError(null);
-      const res = await fetch(`${GAMMA_API}/markets?active=true&closed=false&limit=100`);
-      if (!res.ok) throw new Error(`API error: ${res.status}`);
-      const markets = await res.json();
-
-      const found: Opportunity[] = [];
-      let checked = 0;
-
-      for (const m of markets) {
-        if (!m.clobTokenIds) continue;
-        let tokenIds: string[];
-        try { tokenIds = JSON.parse(m.clobTokenIds); } catch { continue; }
-        if (tokenIds.length !== 2) continue;
-        if (!m.outcomePrices) continue;
-
-        let prices;
-        try { prices = JSON.parse(m.outcomePrices); } catch { continue; }
-        if (prices.length !== 2) continue;
-
-        if (checked >= 30) break;
-        checked++;
-
-        try {
-          const [yesBook, noBook] = await Promise.all([
-            fetch(`https://clob.polymarket.com/book?token_id=${tokenIds[0]}`).then(r => r.json()),
-            fetch(`https://clob.polymarket.com/book?token_id=${tokenIds[1]}`).then(r => r.json()),
-          ]);
-
-          const yesAsks = yesBook.asks || [];
-          const noAsks = noBook.asks || [];
-          if (!yesAsks.length || !noAsks.length) continue;
-
-          yesAsks.sort((a: any, b: any) => parseFloat(a.price) - parseFloat(b.price));
-          noAsks.sort((a: any, b: any) => parseFloat(a.price) - parseFloat(b.price));
-
-          const yesAsk = parseFloat(yesAsks[0].price);
-          const noAsk = parseFloat(noAsks[0].price);
-          const spread = 1 - (yesAsk + noAsk);
-
-          if (spread > -0.05) {
-            found.push({
-              market_id: m.id || m.conditionId,
-              question: m.question,
-              yes_price: yesAsk,
-              no_price: noAsk,
-              spread,
-              volume: parseFloat(m.volume || 0),
-              liquidity: parseFloat(m.liquidity || 0),
-            });
-          }
-        } catch { continue; }
-
-        await new Promise(r => setTimeout(r, 100));
-      }
-
-      found.sort((a, b) => b.spread - a.spread);
-      setOpps(found);
+      const result = await runScan();
+      setOpps(result.state.opportunities);
       setLastRefresh(new Date());
     } catch (err: any) {
       setError(err.message);
+      // Fall back to cached state
+      const cached = loadState();
+      if (cached.opportunities.length > 0) {
+        setOpps(cached.opportunities);
+      }
     } finally {
       setLoading(false);
     }
   }, []);
 
   useEffect(() => {
+    // Load cached opportunities immediately
+    const cached = loadState();
+    if (cached.opportunities.length > 0) {
+      setOpps(cached.opportunities);
+      setLoading(false);
+    }
+    // Then fetch live
     fetchLive();
     const i = setInterval(fetchLive, 60000);
     return () => clearInterval(i);
@@ -211,13 +160,13 @@ export default function Opportunities() {
                       <td className="text-right px-6 py-4 text-sm font-mono text-gray-400">${total.toFixed(3)}</td>
                       <td className="text-right px-6 py-4">
                         <span className={`inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-bold ${
-                          isHot ? 'text-profit bg-profit/10 glow-profit' : 'text-accent bg-accent/10'
+                          isHot ? 'text-profit bg-profit/10 glow-profit' : opp.spread > 0 ? 'text-accent bg-accent/10' : 'text-gray-400 bg-white/5'
                         }`}>
                           {(opp.spread * 100).toFixed(2)}%
                         </span>
                       </td>
                       <td className="text-right px-6 py-4">
-                        <span className="text-sm font-mono text-profit font-semibold glow-profit">${profitPer100}</span>
+                        <span className={`text-sm font-mono font-semibold ${opp.spread > 0 ? 'text-profit glow-profit' : 'text-gray-500'}`}>${profitPer100}</span>
                       </td>
                       <td className="text-right px-6 py-4 text-xs text-gray-600 font-medium">${(opp.volume / 1000).toFixed(0)}k</td>
                     </tr>
@@ -231,7 +180,7 @@ export default function Opportunities() {
 
       {/* Footer */}
       <div className="flex items-center justify-between mt-4">
-        <p className="text-[10px] text-gray-700">Data fetched live from Polymarket API. Auto-refreshes every 60s.</p>
+        <p className="text-[10px] text-gray-700">Data fetched live from Polymarket CLOB. Auto-refreshes every 60s. Paper trades executed on positive spreads.</p>
         {lastRefresh && (
           <p className="text-[10px] text-gray-700">Last refresh: {lastRefresh.toLocaleTimeString()}</p>
         )}

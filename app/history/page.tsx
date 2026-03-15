@@ -1,8 +1,7 @@
 'use client';
 import { useEffect, useState } from 'react';
 import { XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, AreaChart, Area, BarChart, Bar } from 'recharts';
-
-const BASE = process.env.NEXT_PUBLIC_BASE_PATH || '';
+import { loadState, AppState } from '@/lib/store';
 
 function StatBox({ label, value, color = 'text-white', icon }: { label: string; value: string; color?: string; icon: React.ReactNode }) {
   return (
@@ -39,23 +38,25 @@ function CustomTooltipScans({ active, payload, label }: any) {
 }
 
 export default function History() {
-  const [data, setData] = useState<any>(null);
+  const [data, setData] = useState<AppState | null>(null);
 
   useEffect(() => {
-    fetch(`${BASE}/data.json`).then(r => r.json()).then(setData).catch(console.error);
+    setData(loadState());
+    const i = setInterval(() => setData(loadState()), 10000);
+    return () => clearInterval(i);
   }, []);
 
   const trades = data?.positions?.closed || [];
   const scans = data?.scans || [];
 
   let cumPnl = 0;
-  const pnlData = [...trades].reverse().map((t: any) => {
+  const pnlData = [...trades].reverse().map((t) => {
     cumPnl += t.pnl;
     return { date: t.closed_at, pnl: cumPnl, tradePnl: t.pnl };
   });
 
   const avgSpread = trades.length > 0
-    ? (trades.reduce((s: number, t: any) => s + t.spread, 0) / trades.length * 100).toFixed(2)
+    ? (trades.reduce((s, t) => s + t.spread, 0) / trades.length * 100).toFixed(2)
     : '0';
 
   const isLoading = !data;
@@ -161,6 +162,7 @@ export default function History() {
                 </svg>
               </div>
               <p className="text-sm text-gray-600">No closed trades yet</p>
+              <p className="text-[10px] text-gray-700 mt-1">Trades auto-close after 1 hour</p>
             </div>
           </div>
         )}
@@ -220,6 +222,7 @@ export default function History() {
                 </svg>
               </div>
               <p className="text-sm text-gray-600">Waiting for scan data...</p>
+              <p className="text-[10px] text-gray-700 mt-1">Scans run every 60 seconds</p>
             </div>
           </div>
         )}

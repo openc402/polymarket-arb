@@ -1,8 +1,455 @@
 {
-  "portfolio": { "balance": 10000, "initial_balance": 10000, "total_trades": 0, "winning_trades": 0, "total_pnl": 0 },
-  "positions": { "open": [], "closed": [] },
-  "history": [],
-  "scans": [],
-  "opportunities": [],
-  "lastScan": null
+  "portfolio": {
+    "balance": 10000,
+    "initial_balance": 10000,
+    "total_trades": 0,
+    "winning_trades": 0,
+    "total_pnl": 0
+  },
+  "positions": {
+    "open": [],
+    "closed": []
+  },
+  "history": [
+    {
+      "timestamp": "2026-03-15T17:06:20.478Z",
+      "balance": 10000,
+      "total_value": 10000,
+      "pnl": 0
+    }
+  ],
+  "scans": [
+    {
+      "timestamp": "2026-03-15T17:06:20.478Z",
+      "markets_scanned": 5800,
+      "opportunities_found": 42
+    }
+  ],
+  "opportunities": [
+    {
+      "market_id": "540844",
+      "question": "Will bitcoin hit $1m before GTA VI?",
+      "yes_price": 0.489,
+      "no_price": 0.512,
+      "spread": -0.0009999999999998899,
+      "volume": 3582306.12068169,
+      "liquidity": 417928.99545,
+      "timestamp": "2026-03-15T17:06:14.630Z"
+    },
+    {
+      "market_id": "540881",
+      "question": "GTA VI released before June 2026?",
+      "yes_price": 0.027,
+      "no_price": 0.974,
+      "spread": -0.0009999999999998899,
+      "volume": 11946120.143028015,
+      "liquidity": 53848.18208,
+      "timestamp": "2026-03-15T17:06:14.789Z"
+    },
+    {
+      "market_id": "553825",
+      "question": "Will the Florida Panthers win the 2026 NHL Stanley Cup?",
+      "yes_price": 0.014,
+      "no_price": 0.987,
+      "spread": -0.0009999999999998899,
+      "volume": 898055.6635779963,
+      "liquidity": 68364.47408,
+      "timestamp": "2026-03-15T17:06:16.630Z"
+    },
+    {
+      "market_id": "553831",
+      "question": "Will the Los Angeles Kings win the 2026 NHL Stanley Cup?",
+      "yes_price": 0.01,
+      "no_price": 0.991,
+      "spread": -0.0009999999999998899,
+      "volume": 6286145.474553932,
+      "liquidity": 129860.08419,
+      "timestamp": "2026-03-15T17:06:17.498Z"
+    },
+    {
+      "market_id": "553832",
+      "question": "Will the New Jersey Devils win the 2026 NHL Stanley Cup?",
+      "yes_price": 0.003,
+      "no_price": 0.998,
+      "spread": -0.0009999999999998899,
+      "volume": 651248.1811140026,
+      "liquidity": 79206.96291,
+      "timestamp": "2026-03-15T17:06:17.645Z"
+    },
+    {
+      "market_id": "553833",
+      "question": "Will the Winnipeg Jets win the 2026 NHL Stanley Cup?",
+      "yes_price": 0.003,
+      "no_price": 0.998,
+      "spread": -0.0009999999999998899,
+      "volume": 573261.7457900002,
+      "liquidity": 137666.93125,
+      "timestamp": "2026-03-15T17:06:17.782Z"
+    },
+    {
+      "market_id": "553834",
+      "question": "Will the Toronto Maple Leafs win the 2026 NHL Stanley Cup?",
+      "yes_price": 0.003,
+      "no_price": 0.998,
+      "spread": -0.0009999999999998899,
+      "volume": 829442.6701140034,
+      "liquidity": 108522.85138,
+      "timestamp": "2026-03-15T17:06:17.934Z"
+    },
+    {
+      "market_id": "553835",
+      "question": "Will the Washington Capitals win the 2026 NHL Stanley Cup?",
+      "yes_price": 0.005,
+      "no_price": 0.996,
+      "spread": -0.0009999999999998899,
+      "volume": 400654.75152599934,
+      "liquidity": 106646.99922,
+      "timestamp": "2026-03-15T17:06:18.078Z"
+    },
+    {
+      "market_id": "553837",
+      "question": "Will the Ottawa Senators win the 2026 NHL Stanley Cup?",
+      "yes_price": 0.019,
+      "no_price": 0.982,
+      "spread": -0.0009999999999998899,
+      "volume": 600468.6100679998,
+      "liquidity": 98708.89325,
+      "timestamp": "2026-03-15T17:06:18.243Z"
+    },
+    {
+      "market_id": "553839",
+      "question": "Will the Utah Mammoth win the 2026 NHL Stanley Cup?",
+      "yes_price": 0.019,
+      "no_price": 0.982,
+      "spread": -0.0009999999999998899,
+      "volume": 565877.2177770003,
+      "liquidity": 134483.32956,
+      "timestamp": "2026-03-15T17:06:18.538Z"
+    },
+    {
+      "market_id": "553841",
+      "question": "Will the Vancouver Canucks win the 2026 NHL Stanley Cup?",
+      "yes_price": 0.002,
+      "no_price": 0.999,
+      "spread": -0.0009999999999998899,
+      "volume": 1154475.6801480025,
+      "liquidity": 156340.85266,
+      "timestamp": "2026-03-15T17:06:18.713Z"
+    },
+    {
+      "market_id": "553842",
+      "question": "Will the New York Islanders win the 2026 NHL Stanley Cup?",
+      "yes_price": 0.016,
+      "no_price": 0.985,
+      "spread": -0.0009999999999998899,
+      "volume": 3919220.881763999,
+      "liquidity": 146329.21364,
+      "timestamp": "2026-03-15T17:06:18.869Z"
+    },
+    {
+      "market_id": "553843",
+      "question": "Will the Philadelphia Flyers win the 2026 NHL Stanley Cup?",
+      "yes_price": 0.002,
+      "no_price": 0.999,
+      "spread": -0.0009999999999998899,
+      "volume": 642642.3479660017,
+      "liquidity": 138860.53552,
+      "timestamp": "2026-03-15T17:06:19.011Z"
+    },
+    {
+      "market_id": "553846",
+      "question": "Will the Nashville Predators win the 2026 NHL Stanley Cup?",
+      "yes_price": 0.003,
+      "no_price": 0.998,
+      "spread": -0.0009999999999998899,
+      "volume": 951953.972086003,
+      "liquidity": 114901.45479,
+      "timestamp": "2026-03-15T17:06:19.351Z"
+    },
+    {
+      "market_id": "553847",
+      "question": "Will the Detroit Red Wings win the 2026 NHL Stanley Cup?",
+      "yes_price": 0.014,
+      "no_price": 0.987,
+      "spread": -0.0009999999999998899,
+      "volume": 590243.9901450014,
+      "liquidity": 132015.71146,
+      "timestamp": "2026-03-15T17:06:19.503Z"
+    },
+    {
+      "market_id": "553848",
+      "question": "Will the Anaheim Ducks win the 2026 NHL Stanley Cup?",
+      "yes_price": 0.018,
+      "no_price": 0.983,
+      "spread": -0.0009999999999998899,
+      "volume": 447109.1674019996,
+      "liquidity": 115416.76179,
+      "timestamp": "2026-03-15T17:06:19.649Z"
+    },
+    {
+      "market_id": "553849",
+      "question": "Will the Montreal Canadiens win the 2026 NHL Stanley Cup?",
+      "yes_price": 0.029,
+      "no_price": 0.972,
+      "spread": -0.0009999999999998899,
+      "volume": 847214.8504050019,
+      "liquidity": 103845.60005,
+      "timestamp": "2026-03-15T17:06:19.793Z"
+    },
+    {
+      "market_id": "553850",
+      "question": "Will the Boston Bruins win the 2026 NHL Stanley Cup?",
+      "yes_price": 0.009,
+      "no_price": 0.992,
+      "spread": -0.0009999999999998899,
+      "volume": 612554.4223320005,
+      "liquidity": 135549.37973,
+      "timestamp": "2026-03-15T17:06:19.934Z"
+    },
+    {
+      "market_id": "553851",
+      "question": "Will the Buffalo Sabres win the 2026 NHL Stanley Cup?",
+      "yes_price": 0.059,
+      "no_price": 0.942,
+      "spread": -0.0009999999999998899,
+      "volume": 597991.507280999,
+      "liquidity": 98544.41824,
+      "timestamp": "2026-03-15T17:06:20.081Z"
+    },
+    {
+      "market_id": "553852",
+      "question": "Will the Pittsburgh Penguins win the 2026 NHL Stanley Cup?",
+      "yes_price": 0.018,
+      "no_price": 0.983,
+      "spread": -0.0009999999999998899,
+      "volume": 732894.0034860014,
+      "liquidity": 125323.46983,
+      "timestamp": "2026-03-15T17:06:20.228Z"
+    },
+    {
+      "market_id": "553853",
+      "question": "Will the Seattle Kraken win the 2026 NHL Stanley Cup?",
+      "yes_price": 0.005,
+      "no_price": 0.996,
+      "spread": -0.0009999999999998899,
+      "volume": 716266.713537999,
+      "liquidity": 148979.14619,
+      "timestamp": "2026-03-15T17:06:20.363Z"
+    },
+    {
+      "market_id": "553827",
+      "question": "Will the Dallas Stars win the 2026 NHL Stanley Cup?",
+      "yes_price": 0.076,
+      "no_price": 0.926,
+      "spread": -0.0020000000000000018,
+      "volume": 650269.4629999986,
+      "liquidity": 72452.54105,
+      "timestamp": "2026-03-15T17:06:16.926Z"
+    },
+    {
+      "market_id": "553828",
+      "question": "Will the Colorado Avalanche win the 2026 NHL Stanley Cup?",
+      "yes_price": 0.226,
+      "no_price": 0.776,
+      "spread": -0.0020000000000000018,
+      "volume": 12114611.445912074,
+      "liquidity": 105263.71419,
+      "timestamp": "2026-03-15T17:06:17.060Z"
+    },
+    {
+      "market_id": "553844",
+      "question": "Will the Columbus Blue Jackets win the 2026 NHL Stanley Cup?",
+      "yes_price": 0.016,
+      "no_price": 0.986,
+      "spread": -0.0020000000000000018,
+      "volume": 494269.9405739985,
+      "liquidity": 89559.59028,
+      "timestamp": "2026-03-15T17:06:19.146Z"
+    },
+    {
+      "market_id": "553829",
+      "question": "Will the Vegas Golden Knights win the 2026 NHL Stanley Cup?",
+      "yes_price": 0.06,
+      "no_price": 0.943,
+      "spread": -0.0029999999999998916,
+      "volume": 884978.9509889977,
+      "liquidity": 108454.70896,
+      "timestamp": "2026-03-15T17:06:17.211Z"
+    },
+    {
+      "market_id": "553838",
+      "question": "Will the Minnesota Wild win the 2026 NHL Stanley Cup?",
+      "yes_price": 0.061,
+      "no_price": 0.942,
+      "spread": -0.0029999999999998916,
+      "volume": 7815518.171939012,
+      "liquidity": 80262.35291,
+      "timestamp": "2026-03-15T17:06:18.383Z"
+    },
+    {
+      "market_id": "553830",
+      "question": "Will the Tampa Bay Lightning win the 2026 NHL Stanley Cup?",
+      "yes_price": 0.136,
+      "no_price": 0.867,
+      "spread": -0.0030000000000001137,
+      "volume": 235232.30802899244,
+      "liquidity": 82237.14545,
+      "timestamp": "2026-03-15T17:06:17.348Z"
+    },
+    {
+      "market_id": "546612",
+      "question": "Will OpenAI launch a new consumer hardware product by March 31, 2026?",
+      "yes_price": 0.016,
+      "no_price": 0.988,
+      "spread": -0.0040000000000000036,
+      "volume": 116848.95750100013,
+      "liquidity": 7287.54535,
+      "timestamp": "2026-03-15T17:06:15.764Z"
+    },
+    {
+      "market_id": "531202",
+      "question": "BitBoy convicted?",
+      "yes_price": 0.21,
+      "no_price": 0.795,
+      "spread": -0.0050000000000001155,
+      "volume": 100871.1919619993,
+      "liquidity": 1530.84993,
+      "timestamp": "2026-03-15T17:06:13.631Z"
+    },
+    {
+      "market_id": "540816",
+      "question": "Russia-Ukraine Ceasefire before GTA VI?",
+      "yes_price": 0.55,
+      "no_price": 0.46,
+      "spread": -0.010000000000000009,
+      "volume": 1380926.7141150003,
+      "liquidity": 39379.1675,
+      "timestamp": "2026-03-15T17:06:13.778Z"
+    },
+    {
+      "market_id": "540817",
+      "question": "New Rihanna Album before GTA VI?",
+      "yes_price": 0.64,
+      "no_price": 0.37,
+      "spread": -0.010000000000000009,
+      "volume": 656757.3641940006,
+      "liquidity": 29052.3616,
+      "timestamp": "2026-03-15T17:06:13.920Z"
+    },
+    {
+      "market_id": "540819",
+      "question": "Will Jesus Christ return before GTA VI?",
+      "yes_price": 0.49,
+      "no_price": 0.52,
+      "spread": -0.010000000000000009,
+      "volume": 10039555.965619173,
+      "liquidity": 722846.6166,
+      "timestamp": "2026-03-15T17:06:14.206Z"
+    },
+    {
+      "market_id": "540820",
+      "question": "Trump out as President before GTA VI?",
+      "yes_price": 0.52,
+      "no_price": 0.49,
+      "spread": -0.010000000000000009,
+      "volume": 538868.054719005,
+      "liquidity": 41002.9392,
+      "timestamp": "2026-03-15T17:06:14.341Z"
+    },
+    {
+      "market_id": "540843",
+      "question": "Will China invades Taiwan before GTA VI?",
+      "yes_price": 0.52,
+      "no_price": 0.49,
+      "spread": -0.010000000000000009,
+      "volume": 1475982.530507003,
+      "liquidity": 80768.3126,
+      "timestamp": "2026-03-15T17:06:14.481Z"
+    },
+    {
+      "market_id": "550694",
+      "question": "Will Italy qualify for the 2026 FIFA World Cup?",
+      "yes_price": 0.64,
+      "no_price": 0.37,
+      "spread": -0.010000000000000009,
+      "volume": 219759.1953389999,
+      "liquidity": 2404.1245,
+      "timestamp": "2026-03-15T17:06:15.922Z"
+    },
+    {
+      "market_id": "550703",
+      "question": "Will Sweden qualify for the 2026 FIFA World Cup?",
+      "yes_price": 0.32,
+      "no_price": 0.69,
+      "spread": -0.010000000000000009,
+      "volume": 106505.69350699979,
+      "liquidity": 6311.9104,
+      "timestamp": "2026-03-15T17:06:16.060Z"
+    },
+    {
+      "market_id": "553824",
+      "question": "Will the Carolina Hurricanes win the 2026 NHL Stanley Cup?",
+      "yes_price": 0.12,
+      "no_price": 0.89,
+      "spread": -0.010000000000000009,
+      "volume": 193659.36385300016,
+      "liquidity": 116708.2372,
+      "timestamp": "2026-03-15T17:06:16.483Z"
+    },
+    {
+      "market_id": "553826",
+      "question": "Will the Edmonton Oilers win the 2026 NHL Stanley Cup?",
+      "yes_price": 0.1,
+      "no_price": 0.91,
+      "spread": -0.010000000000000009,
+      "volume": 361833.765447001,
+      "liquidity": 61974.8764,
+      "timestamp": "2026-03-15T17:06:16.771Z"
+    },
+    {
+      "market_id": "544097",
+      "question": "Will Harvey Weinstein be sentenced to more than 30 years in prison?",
+      "yes_price": 0.068,
+      "no_price": 0.949,
+      "spread": -0.016999999999999904,
+      "volume": 25072.01717800001,
+      "liquidity": 4732.68502,
+      "timestamp": "2026-03-15T17:06:15.629Z"
+    },
+    {
+      "market_id": "540818",
+      "question": "New Playboi Carti Album before GTA VI?",
+      "yes_price": 0.62,
+      "no_price": 0.4,
+      "spread": -0.020000000000000018,
+      "volume": 686623.5163539996,
+      "liquidity": 25109.1439,
+      "timestamp": "2026-03-15T17:06:14.058Z"
+    },
+    {
+      "market_id": "550706",
+      "question": "Will Poland qualify for the 2026 FIFA World Cup?",
+      "yes_price": 0.42,
+      "no_price": 0.6,
+      "spread": -0.020000000000000018,
+      "volume": 460585.79759700055,
+      "liquidity": 2239.0496,
+      "timestamp": "2026-03-15T17:06:16.203Z"
+    },
+    {
+      "market_id": "550708",
+      "question": "Will Ukraine qualify for the 2026 FIFA World Cup?",
+      "yes_price": 0.29,
+      "no_price": 0.73,
+      "spread": -0.020000000000000018,
+      "volume": 140263.5305580003,
+      "liquidity": 2101.2671,
+      "timestamp": "2026-03-15T17:06:16.342Z"
+    }
+  ],
+  "lastScan": {
+    "timestamp": "2026-03-15T17:06:20.478Z",
+    "markets_scanned": 5800,
+    "opportunities_found": 42
+  }
 }

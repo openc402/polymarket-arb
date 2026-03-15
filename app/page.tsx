@@ -1,9 +1,9 @@
 'use client';
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useCallback } from 'react';
 import StatsCard from '@/components/StatsCard';
 import { XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Area, AreaChart } from 'recharts';
-
-const BASE = process.env.NEXT_PUBLIC_BASE_PATH || '';
+import { loadState, AppState } from '@/lib/store';
+import { runScan } from '@/lib/scanner';
 
 function SkeletonCard() {
   return (
@@ -38,15 +38,35 @@ function CustomTooltip({ active, payload, label }: any) {
 }
 
 export default function Overview() {
-  const [data, setData] = useState<any>(null);
+  const [data, setData] = useState<AppState | null>(null);
+  const [scanning, setScanning] = useState(false);
+  const [scanCount, setScanCount] = useState(0);
 
-  const fetchData = () => fetch(`${BASE}/data.json`).then(r => r.json()).then(setData).catch(console.error);
+  const refreshState = useCallback(() => {
+    setData(loadState());
+  }, []);
+
+  const doScan = useCallback(async () => {
+    setScanning(true);
+    try {
+      const result = await runScan();
+      setData(result.state);
+      setScanCount(c => c + 1);
+    } catch (err) {
+      console.error('Scan error:', err);
+    } finally {
+      setScanning(false);
+    }
+  }, []);
 
   useEffect(() => {
-    fetchData();
-    const i = setInterval(fetchData, 30000);
+    refreshState();
+    // Run initial scan after mount
+    doScan();
+    // Scan every 60 seconds
+    const i = setInterval(doScan, 60000);
     return () => clearInterval(i);
-  }, []);
+  }, [refreshState, doScan]);
 
   if (!data) return (
     <div className="animate-fade-in">
@@ -68,8 +88,8 @@ export default function Overview() {
   const roi = portfolio.initial_balance > 0 ? ((portfolio.total_pnl / portfolio.initial_balance) * 100).toFixed(2) : '0.00';
   const winRate = portfolio.total_trades > 0 ? ((portfolio.winning_trades / portfolio.total_trades) * 100).toFixed(1) : '0';
 
-  const historyValues = (history || []).slice(-20).map((h: any) => h.total_value);
-  const pnlSpark = (positions?.closed || []).slice(-12).map((t: any) => t.pnl);
+  const historyValues = (history || []).slice(-20).map((h) => h.total_value);
+  const pnlSpark = (positions?.closed || []).slice(-12).map((t) => t.pnl);
 
   return (
     <div className="animate-fade-in">
@@ -79,25 +99,33 @@ export default function Overview() {
           <h2 className="text-3xl font-bold text-white tracking-tight">Dashboard</h2>
           <p className="text-sm text-gray-600 mt-1">Real-time portfolio overview</p>
         </div>
-        {lastScan && (
-          <div className="flex items-center gap-3 glass-card rounded-xl px-4 py-2.5">
-            <div className="w-2 h-2 rounded-full bg-profit status-dot" />
-            <div>
-              <p className="text-[10px] text-gray-500 font-medium">Last scan</p>
-              <p className="text-xs text-gray-400">{new Date(lastScan.timestamp).toLocaleTimeString()}</p>
+        <div className="flex items-center gap-3">
+          {scanning && (
+            <div className="flex items-center gap-2 text-xs text-accent">
+              <div className="w-4 h-4 border-2 border-accent/30 border-t-accent rounded-full animate-spin" />
+              Scanning...
             </div>
-            <div className="h-6 w-px bg-white/5" />
-            <div>
-              <p className="text-[10px] text-gray-500 font-medium">Markets</p>
-              <p className="text-xs text-gray-400">{lastScan.markets_scanned}</p>
+          )}
+          {lastScan && (
+            <div className="flex items-center gap-3 glass-card rounded-xl px-4 py-2.5">
+              <div className="w-2 h-2 rounded-full bg-profit status-dot" />
+              <div>
+                <p className="text-[10px] text-gray-500 font-medium">Last scan</p>
+                <p className="text-xs text-gray-400">{new Date(lastScan.timestamp).toLocaleTimeString()}</p>
+              </div>
+              <div className="h-6 w-px bg-white/5" />
+              <div>
+                <p className="text-[10px] text-gray-500 font-medium">Markets</p>
+                <p className="text-xs text-gray-400">{lastScan.markets_scanned}</p>
+              </div>
+              <div className="h-6 w-px bg-white/5" />
+              <div>
+                <p className="text-[10px] text-gray-500 font-medium">Found</p>
+                <p className="text-xs text-accent font-semibold">{lastScan.opportunities_found}</p>
+              </div>
             </div>
-            <div className="h-6 w-px bg-white/5" />
-            <div>
-              <p className="text-[10px] text-gray-500 font-medium">Found</p>
-              <p className="text-xs text-accent font-semibold">{lastScan.opportunities_found}</p>
-            </div>
-          </div>
-        )}
+          )}
+        </div>
       </div>
 
       {/* Stats Grid */}
@@ -196,8 +224,8 @@ export default function Overview() {
                   <path strokeLinecap="round" strokeLinejoin="round" d="M3 13.125C3 12.504 3.504 12 4.125 12h2.25c.621 0 1.125.504 1.125 1.125v6.75C7.5 20.496 6.996 21 6.375 21h-2.25A1.125 1.125 0 013 19.875v-6.75z" />
                 </svg>
               </div>
-              <p className="text-sm text-gray-500">Waiting for chart data...</p>
-              <p className="text-[10px] text-gray-700 mt-1">Run the scanner to start tracking</p>
+              <p className="text-sm text-gray-500">Scanning markets...</p>
+              <p className="text-[10px] text-gray-700 mt-1">Data will appear after the first scan completes</p>
             </div>
           </div>
         )}
