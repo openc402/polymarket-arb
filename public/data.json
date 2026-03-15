@@ -1,0 +1,8 @@
+{
+  "portfolio": { "balance": 10000, "initial_balance": 10000, "total_trades": 0, "winning_trades": 0, "total_pnl": 0 },
+  "positions": { "open": [], "closed": [] },
+  "history": [],
+  "scans": [],
+  "opportunities": [],
+  "lastScan": null
+}
