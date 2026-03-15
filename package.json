@@ -1,19 +1,21 @@
 {
   "name": "polymarket-arb",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "private": true,
   "scripts": {
-    "dev": "next dev",
+    "dev": "next dev --port 3000",
     "build": "next build",
-    "start": "npx serve out",
-    "scanner": "node scanner.js"
+    "start": "next start",
+    "server": "node server.js"
   },
   "dependencies": {
+    "express": "^4.21.0",
     "lucide-react": "^0.400.0",
     "next": "^14.2.0",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
-    "recharts": "^2.12.0"
+    "recharts": "^2.12.0",
+    "ws": "^8.18.0"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",

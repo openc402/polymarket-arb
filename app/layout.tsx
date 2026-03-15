@@ -1,24 +1,20 @@
-import './globals.css';
 import type { Metadata } from 'next';
-import Sidebar from '@/components/Sidebar';
+import './globals.css';
 
 export const metadata: Metadata = {
-  title: 'Poly Arb | Arbitrage Scanner',
-  description: 'Real-time Polymarket arbitrage scanner & paper trading dashboard',
+  title: 'Polymarket BTC Arb Bot',
+  description: 'Real-time BTC Up/Down arbitrage scanner',
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en" className="dark">
-      <body className="flex min-h-screen bg-dark-950 font-sans antialiased">
-        {/* Animated mesh gradient background */}
+      <body className="min-h-screen antialiased">
         <div className="mesh-gradient" />
         <div className="mesh-gradient-accent" />
-
-        <Sidebar />
-        <main className="relative z-10 flex-1 ml-72 p-10">
+        <div className="relative z-10">
           {children}
-        </main>
+        </div>
       </body>
     </html>
   );
