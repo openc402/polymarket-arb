@@ -15,8 +15,8 @@ const TRADE_SIZE = 50;
 
 const MARKET_SCAN_INTERVAL = 30000;   // 30s between market discovery (faster for 5min transitions)
 const ORDERBOOK_INTERVAL = 60000;     // 60s between orderbook refreshes (depth info only)
-const LIVE_PRICE_INTERVAL = 5000;     // 5s between live CLOB price fetches
-const LIVE_PRICE_CALL_DELAY = 500;    // 500ms between individual CLOB price calls
+const LIVE_PRICE_INTERVAL = 2000;     // 2s between live CLOB price fetches (last-trade-price is lightweight)
+const LIVE_PRICE_CALL_DELAY = 300;    // 300ms between individual CLOB price calls
 const GAMMA_RATE_LIMIT = 5000;        // 5s between gamma requests
 const CLOB_RATE_LIMIT = 2000;         // 2s between clob requests
 const BTC_HISTORY_MAX = 300;          // ~5 min of per-second data
@@ -244,25 +244,36 @@ async function fetchLivePrices(market) {
   const downToken = market.clobTokenIds[1];
   if (!upToken || !downToken || upToken === downToken) return;
 
-  // 6 calls with 500ms delay between each
+  // Fetch last-trade-price first (lightweight, most accurate — what Polymarket displays)
+  const upLastRes = await fetchClobPrice('last-trade-price', upToken);
+  await sleep(LIVE_PRICE_CALL_DELAY);
+  const downLastRes = await fetchClobPrice('last-trade-price', downToken);
+  await sleep(LIVE_PRICE_CALL_DELAY);
+
+  // Last trade price is the PRIMARY display price (matches Polymarket's "Up Xc" / "Down Xc")
+  const upLastVal = upLastRes?.price != null ? parseFloat(upLastRes.price) : null;
+  const downLastVal = downLastRes?.price != null ? parseFloat(downLastRes.price) : null;
+  market.upLastPrice = upLastVal && upLastVal > 0 ? upLastVal : null;
+  market.downLastPrice = downLastVal && downLastVal > 0 ? downLastVal : null;
+
+  // Midpoint as secondary/fallback
   const upMidRes = await fetchClobPrice('midpoint', upToken);
   await sleep(LIVE_PRICE_CALL_DELAY);
+  const downMidRes = await fetchClobPrice('midpoint', downToken);
+  await sleep(LIVE_PRICE_CALL_DELAY);
+
+  market.upMid = upMidRes?.mid != null ? parseFloat(upMidRes.mid) : null;
+  market.downMid = downMidRes?.mid != null ? parseFloat(downMidRes.mid) : null;
+
+  // Buy/sell prices for spread info
   const upBuyRes = await fetchClobPrice('price', upToken, 'side=buy');
   await sleep(LIVE_PRICE_CALL_DELAY);
   const upSellRes = await fetchClobPrice('price', upToken, 'side=sell');
-  await sleep(LIVE_PRICE_CALL_DELAY);
-  const downMidRes = await fetchClobPrice('midpoint', downToken);
   await sleep(LIVE_PRICE_CALL_DELAY);
   const downBuyRes = await fetchClobPrice('price', downToken, 'side=buy');
   await sleep(LIVE_PRICE_CALL_DELAY);
   const downSellRes = await fetchClobPrice('price', downToken, 'side=sell');
 
-  // Midpoint is the TRUE price — always use it as primary
-  market.upMid = upMidRes?.mid != null ? parseFloat(upMidRes.mid) : null;
-  market.downMid = downMidRes?.mid != null ? parseFloat(downMidRes.mid) : null;
-
-  // Buy prices: what user pays to buy that outcome (shown as "Up Xc" / "Down Xc")
-  // If /price returns 0, it means no liquidity — set to null so frontend shows '—'
   const upBuyVal = upBuyRes?.price != null ? parseFloat(upBuyRes.price) : null;
   const upSellVal = upSellRes?.price != null ? parseFloat(upSellRes.price) : null;
   const downBuyVal = downBuyRes?.price != null ? parseFloat(downBuyRes.price) : null;
@@ -473,6 +484,8 @@ function buildPayload() {
           question: m.question,
           endDate: m.endDate,
           outcomePrices: m.outcomePrices || [],
+          upLastPrice: m.upLastPrice ?? null,
+          downLastPrice: m.downLastPrice ?? null,
           upMid: m.upMid ?? null,
           downMid: m.downMid ?? null,
           upBuy: m.upBuy ?? null,
@@ -575,7 +588,7 @@ server.listen(PORT, '0.0.0.0', () => {
   ║  HTTP:  http://localhost:${PORT}               ║
   ║  WS:    ws://localhost:${PORT}                 ║
   ║  BTC:   Binance real-time WebSocket          ║
-  ║  Live CLOB prices: 5s  | Orderbooks: 60s    ║
+  ║  Live CLOB prices: 2s  | Orderbooks: 60s    ║
   ║  Markets: 30s scan                           ║
   ╚══════════════════════════════════════════════╝
   `);

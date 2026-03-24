@@ -25,6 +25,8 @@ interface Market {
   question: string;
   endDate: string;
   outcomePrices: number[];
+  upLastPrice: number | null;
+  downLastPrice: number | null;
   upMid: number | null;
   downMid: number | null;
   upBuy: number | null;
@@ -476,14 +478,20 @@ function MarketContent({ market, btcPrice }: { market: Market; btcPrice: number 
   const timeLeft = Math.min(rawTimeLeft, maxDuration);
   const isUrgent = timeLeft > 0 && timeLeft < 30000;
 
-  // CLOB midpoint is the TRUE price
+  // Last trade price is the TRUE price — matches what Polymarket displays
+  const upLast = market.upLastPrice;
+  const downLast = market.downLastPrice;
+  const hasLast = upLast != null && downLast != null;
+
+  // Midpoint as fallback
   const upMid = market.upMid;
   const downMid = market.downMid;
   const hasMid = upMid != null && downMid != null;
 
-  // Buy prices — what Polymarket shows as "Up Xc" / "Down Xc"
-  const upBuyCents = market.upBuy != null ? market.upBuy * 100 : null;
-  const downBuyCents = market.downBuy != null ? market.downBuy * 100 : null;
+  // Primary display: last trade price > midpoint > buy price
+  const upCents = upLast != null ? upLast * 100 : upMid != null ? upMid * 100 : market.upBuy != null ? market.upBuy * 100 : null;
+  const downCents = downLast != null ? downLast * 100 : downMid != null ? downMid * 100 : market.downBuy != null ? market.downBuy * 100 : null;
+  const hasPrice = hasLast || hasMid;
 
   // Direction vs reference price
   const refPrice = market.referencePrice;
@@ -492,9 +500,9 @@ function MarketContent({ market, btcPrice }: { market: Market; btcPrice: number 
   const priceDiff = hasDirection ? btcPrice! - refPrice! : 0;
   const priceDiffPct = hasDirection && refPrice ? (Math.abs(priceDiff) / refPrice * 100) : 0;
 
-  // Proportional bar widths from buy prices
-  const upVal = upBuyCents ?? (upMid != null ? upMid * 100 : 50);
-  const downVal = downBuyCents ?? (downMid != null ? downMid * 100 : 50);
+  // Proportional bar widths from primary prices
+  const upVal = upCents ?? 50;
+  const downVal = downCents ?? 50;
   const total = upVal + downVal;
   const upBarPct = total > 0 ? (upVal / total) * 100 : 50;
   const downBarPct = total > 0 ? (downVal / total) * 100 : 50;
@@ -531,24 +539,25 @@ function MarketContent({ market, btcPrice }: { market: Market; btcPrice: number 
           {formatCountdown(timeLeft)}
         </span>
         <span className="text-[10px] tabular-nums flex items-center gap-2">
-          {hasMid && <span className="text-[#00ff88] font-bold">LIVE</span>}
-          {hasMid && <span className="text-gray-500">Mid: {(upMid + downMid).toFixed(3)}</span>}
+          {hasPrice && <span className="text-[#00ff88] font-bold">LIVE</span>}
+          {hasLast && <span className="text-gray-500">Last trade</span>}
+          {!hasLast && hasMid && <span className="text-gray-500">Mid: {(upMid! + downMid!).toFixed(3)}</span>}
         </span>
       </div>
 
-      {/* Up / Down buy prices — Polymarket style */}
+      {/* Up / Down prices — last trade price (matches Polymarket) */}
       <div className="flex gap-3 mb-1">
         <div className="flex-1">
           <div className="flex items-baseline justify-between mb-1">
             <span className="text-[10px] text-gray-500 font-semibold uppercase">Up</span>
             <span className="text-xl font-bold text-[#00ff88] tabular-nums"
               style={{ textShadow: '0 0 12px rgba(0,255,136,0.3)' }}>
-              {upBuyCents != null ? `${upBuyCents.toFixed(0)}\u00A2` : hasMid ? `${(upMid! * 100).toFixed(0)}\u00A2` : '\u2014'}
+              {upCents != null ? `${upCents.toFixed(0)}\u00A2` : '\u2014'}
             </span>
           </div>
-          {market.upSell != null && (
+          {market.upBuy != null && upLast != null && Math.abs(market.upBuy - upLast) > 0.005 && (
             <div className="text-[9px] text-gray-500 tabular-nums">
-              Sell {(market.upSell * 100).toFixed(1)}&cent;
+              Buy {(market.upBuy * 100).toFixed(1)}&cent; / Sell {market.upSell != null ? `${(market.upSell * 100).toFixed(1)}` : '—'}&cent;
             </div>
           )}
         </div>
@@ -557,12 +566,12 @@ function MarketContent({ market, btcPrice }: { market: Market; btcPrice: number 
             <span className="text-[10px] text-gray-500 font-semibold uppercase">Down</span>
             <span className="text-xl font-bold text-[#ff4757] tabular-nums"
               style={{ textShadow: '0 0 12px rgba(255,71,87,0.3)' }}>
-              {downBuyCents != null ? `${downBuyCents.toFixed(0)}\u00A2` : hasMid ? `${(downMid! * 100).toFixed(0)}\u00A2` : '\u2014'}
+              {downCents != null ? `${downCents.toFixed(0)}\u00A2` : '\u2014'}
             </span>
           </div>
-          {market.downSell != null && (
+          {market.downBuy != null && downLast != null && Math.abs(market.downBuy - downLast) > 0.005 && (
             <div className="text-[9px] text-gray-500 tabular-nums">
-              Sell {(market.downSell * 100).toFixed(1)}&cent;
+              Buy {(market.downBuy * 100).toFixed(1)}&cent; / Sell {market.downSell != null ? `${(market.downSell * 100).toFixed(1)}` : '—'}&cent;
             </div>
           )}
         </div>
