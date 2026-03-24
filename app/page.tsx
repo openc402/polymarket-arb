@@ -25,6 +25,13 @@ interface Market {
   question: string;
   endDate: string;
   outcomePrices: number[];
+  upMid: number | null;
+  downMid: number | null;
+  upBuy: number | null;
+  upSell: number | null;
+  downBuy: number | null;
+  downSell: number | null;
+  livePriceTime: number | null;
   upBook: OrderbookSide;
   downBook: OrderbookSide;
   arb: ArbInfo;
@@ -469,16 +476,13 @@ function MarketContent({ market, btcPrice }: { market: Market; btcPrice: number 
   const timeLeft = Math.min(rawTimeLeft, maxDuration);
   const isUrgent = timeLeft > 0 && timeLeft < 30000;
 
-  // Prices from outcomePrices (primary source) — displayed as cents
-  const upPrice = market.outcomePrices[0] ?? 0;
-  const downPrice = market.outcomePrices[1] ?? 0;
+  // Live CLOB prices (primary), outcomePrices as fallback
+  const hasLive = market.upMid != null && market.downMid != null;
+  const upPrice = hasLive ? market.upMid! : (market.outcomePrices[0] ?? 0);
+  const downPrice = hasLive ? market.downMid! : (market.outcomePrices[1] ?? 0);
   const upCents = upPrice * 100;
   const downCents = downPrice * 100;
   const midPrice = upPrice + downPrice;
-
-  // Orderbook data — only show when actually present
-  const hasUpBook = market.upBook.bestBid.price > 0 || market.upBook.bestAsk.price > 0;
-  const hasDownBook = market.downBook.bestBid.price > 0 || market.downBook.bestAsk.price > 0;
 
   // Direction vs reference price
   const refPrice = market.referencePrice;
@@ -519,34 +523,50 @@ function MarketContent({ market, btcPrice }: { market: Market; btcPrice: number 
         }`} style={isUrgent ? { textShadow: '0 0 12px rgba(255,71,87,0.6)' } : {}}>
           {formatCountdown(timeLeft)}
         </span>
-        <span className="text-[10px] text-gray-500 tabular-nums">
-          Mid: {midPrice.toFixed(3)}
+        <span className="text-[10px] tabular-nums flex items-center gap-2">
+          {hasLive && <span className="text-[#00ff88] font-bold">LIVE</span>}
+          <span className="text-gray-500">Mid: {midPrice.toFixed(3)}</span>
+          <span className="text-gray-600">{hasLive ? 'CLOB' : 'gamma'}</span>
         </span>
       </div>
 
-      {/* Up / Down prices with proportional bar */}
+      {/* Up / Down prices with Buy/Sell from CLOB */}
       <div className="flex gap-3 mb-1">
         <div className="flex-1">
           <div className="flex items-baseline justify-between mb-1">
             <span className="text-[10px] text-gray-500 font-semibold uppercase">Up</span>
-            <span className="text-base font-bold text-[#00ff88] tabular-nums">{upCents.toFixed(1)}&cent;</span>
+            <span className="text-base font-bold text-[#00ff88] tabular-nums">
+              {upCents.toFixed(1)}&cent;
+              {hasLive && <span className="text-[9px] text-gray-500 ml-1">mid</span>}
+            </span>
           </div>
-          {hasUpBook && (
+          {market.upBuy != null && market.upSell != null ? (
+            <div className="text-[9px] text-gray-500 tabular-nums">
+              Buy {(market.upBuy * 100).toFixed(1)}&cent; / Sell {(market.upSell * 100).toFixed(1)}&cent;
+            </div>
+          ) : market.upBook.bestBid.price > 0 || market.upBook.bestAsk.price > 0 ? (
             <div className="text-[9px] text-gray-600 tabular-nums">
               Bid {market.upBook.bestBid.price.toFixed(3)} / Ask {market.upBook.bestAsk.price.toFixed(3)}
             </div>
-          )}
+          ) : null}
         </div>
         <div className="flex-1">
           <div className="flex items-baseline justify-between mb-1">
             <span className="text-[10px] text-gray-500 font-semibold uppercase">Down</span>
-            <span className="text-base font-bold text-[#ff4757] tabular-nums">{downCents.toFixed(1)}&cent;</span>
+            <span className="text-base font-bold text-[#ff4757] tabular-nums">
+              {downCents.toFixed(1)}&cent;
+              {hasLive && <span className="text-[9px] text-gray-500 ml-1">mid</span>}
+            </span>
           </div>
-          {hasDownBook && (
+          {market.downBuy != null && market.downSell != null ? (
+            <div className="text-[9px] text-gray-500 tabular-nums">
+              Buy {(market.downBuy * 100).toFixed(1)}&cent; / Sell {(market.downSell * 100).toFixed(1)}&cent;
+            </div>
+          ) : market.downBook.bestBid.price > 0 || market.downBook.bestAsk.price > 0 ? (
             <div className="text-[9px] text-gray-600 tabular-nums">
               Bid {market.downBook.bestBid.price.toFixed(3)} / Ask {market.downBook.bestAsk.price.toFixed(3)}
             </div>
-          )}
+          ) : null}
         </div>
       </div>
 

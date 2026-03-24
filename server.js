@@ -14,7 +14,9 @@ const MIN_SPREAD_PCT = 0.5;
 const TRADE_SIZE = 50;
 
 const MARKET_SCAN_INTERVAL = 30000;   // 30s between market discovery (faster for 5min transitions)
-const ORDERBOOK_INTERVAL = 30000;     // 30s between orderbook refreshes
+const ORDERBOOK_INTERVAL = 60000;     // 60s between orderbook refreshes (depth info only)
+const LIVE_PRICE_INTERVAL = 10000;    // 10s between live CLOB price fetches
+const LIVE_PRICE_CALL_DELAY = 500;    // 500ms between individual CLOB price calls
 const GAMMA_RATE_LIMIT = 5000;        // 5s between gamma requests
 const CLOB_RATE_LIMIT = 2000;         // 2s between clob requests
 const BTC_HISTORY_MAX = 300;          // ~5 min of per-second data
@@ -220,6 +222,68 @@ async function fetchOrderbook(tokenId) {
   }
 }
 
+// ─── Live CLOB Prices (midpoint + buy/sell) ──────────────────────────────────
+async function fetchClobPrice(endpoint, tokenId, params) {
+  try {
+    let url = `${CLOB_API}/${endpoint}?token_id=${tokenId}`;
+    if (params) url += `&${params}`;
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 5000);
+    const res = await fetch(url, { signal: controller.signal });
+    clearTimeout(timeout);
+    if (!res.ok) return null;
+    return await res.json();
+  } catch {
+    return null;
+  }
+}
+
+async function fetchLivePrices(market) {
+  if (!market.clobTokenIds || market.clobTokenIds.length < 2) return;
+  const upToken = market.clobTokenIds[0];
+  const downToken = market.clobTokenIds[1];
+  if (!upToken || !downToken || upToken === downToken) return;
+
+  // 6 calls with 500ms delay between each
+  const upMidRes = await fetchClobPrice('midpoint', upToken);
+  await sleep(LIVE_PRICE_CALL_DELAY);
+  const upBuyRes = await fetchClobPrice('price', upToken, 'side=buy');
+  await sleep(LIVE_PRICE_CALL_DELAY);
+  const upSellRes = await fetchClobPrice('price', upToken, 'side=sell');
+  await sleep(LIVE_PRICE_CALL_DELAY);
+  const downMidRes = await fetchClobPrice('midpoint', downToken);
+  await sleep(LIVE_PRICE_CALL_DELAY);
+  const downBuyRes = await fetchClobPrice('price', downToken, 'side=buy');
+  await sleep(LIVE_PRICE_CALL_DELAY);
+  const downSellRes = await fetchClobPrice('price', downToken, 'side=sell');
+
+  market.upMid = upMidRes?.mid != null ? parseFloat(upMidRes.mid) : null;
+  market.upBuy = upBuyRes?.price != null ? parseFloat(upBuyRes.price) : null;
+  market.upSell = upSellRes?.price != null ? parseFloat(upSellRes.price) : null;
+  market.downMid = downMidRes?.mid != null ? parseFloat(downMidRes.mid) : null;
+  market.downBuy = downBuyRes?.price != null ? parseFloat(downBuyRes.price) : null;
+  market.downSell = downSellRes?.price != null ? parseFloat(downSellRes.price) : null;
+  market.livePriceTime = Date.now();
+}
+
+// ─── Live Price Loop (every 10s) ─────────────────────────────────────────────
+async function livePriceLoop() {
+  while (true) {
+    try {
+      for (const market of activeMarkets) {
+        const endTime = new Date(market.endDate).getTime();
+        if (endTime <= Date.now()) continue;
+        await fetchLivePrices(market);
+      }
+      const count = activeMarkets.filter(m => m.livePriceTime).length;
+      if (count > 0) console.log(`[LIVE PRICES] Updated ${count} markets`);
+    } catch (e) {
+      console.error('[LIVE PRICES] Error:', e.message);
+    }
+    await sleep(LIVE_PRICE_INTERVAL);
+  }
+}
+
 // ─── Arb Calc & Paper Trading ─────────────────────────────────────────────────
 function calcArbitrage(upBook, downBook, outcomePrices) {
   const bookAskUp = upBook.bestAsk.price;
@@ -401,6 +465,13 @@ function buildPayload() {
           question: m.question,
           endDate: m.endDate,
           outcomePrices: m.outcomePrices || [],
+          upMid: m.upMid ?? null,
+          downMid: m.downMid ?? null,
+          upBuy: m.upBuy ?? null,
+          upSell: m.upSell ?? null,
+          downBuy: m.downBuy ?? null,
+          downSell: m.downSell ?? null,
+          livePriceTime: m.livePriceTime ?? null,
           upBook: m.upBook || { bestBid: { price: 0, size: 0 }, bestAsk: { price: 0, size: 0 } },
           downBook: m.downBook || { bestBid: { price: 0, size: 0 }, bestAsk: { price: 0, size: 0 } },
           arb: m.arb || { profitable: false, spread: 0, cost: 0, profit: 0 },
@@ -492,11 +563,12 @@ process.on('unhandledRejection', (err) => {
 server.listen(PORT, '0.0.0.0', () => {
   console.log(`
   ╔══════════════════════════════════════════════╗
-  ║  Polymarket BTC Arb Bot v3.0                 ║
+  ║  Polymarket BTC Arb Bot v4.0                 ║
   ║  HTTP:  http://localhost:${PORT}               ║
   ║  WS:    ws://localhost:${PORT}                 ║
   ║  BTC:   Binance real-time WebSocket          ║
-  ║  Markets: 90s scan | Orderbooks: 30s scan    ║
+  ║  Live CLOB prices: 10s | Orderbooks: 60s    ║
+  ║  Markets: 30s scan                           ║
   ╚══════════════════════════════════════════════╝
   `);
 
@@ -504,6 +576,7 @@ server.listen(PORT, '0.0.0.0', () => {
   connectBinance();
   startBroadcastLoop();
   marketDiscoveryLoop();
-  // Delay orderbook loop to let market discovery populate first
-  setTimeout(() => orderbookLoop(), 10000);
+  // Delay price loops to let market discovery populate first
+  setTimeout(() => livePriceLoop(), 8000);
+  setTimeout(() => orderbookLoop(), 15000);
 });
