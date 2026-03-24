@@ -31,6 +31,7 @@ interface Market {
   timeLeft: number;
   type: '5m' | '15m';
   active: boolean;
+  referencePrice: number | null;
 }
 
 interface PortfolioState {
@@ -168,10 +169,11 @@ export default function Terminal() {
       : 0
     : 0;
 
-  // Chart domain
-  const prices = priceHistory.map(p => p.price);
-  const minPrice = prices.length ? Math.min(...prices) : 0;
-  const maxPrice = prices.length ? Math.max(...prices) : 100000;
+  // Chart domain — include reference prices so lines are always visible
+  const refPrices = markets.map(m => m.referencePrice).filter((p): p is number => p != null);
+  const allChartPrices = [...priceHistory.map(p => p.price), ...refPrices];
+  const minPrice = allChartPrices.length ? Math.min(...allChartPrices) : 0;
+  const maxPrice = allChartPrices.length ? Math.max(...allChartPrices) : 100000;
   const pricePad = (maxPrice - minPrice) * 0.1 || 100;
 
   const statusDot = wsStatus === 'connected' ? 'bg-[#00ff88]' : wsStatus === 'connecting' ? 'bg-yellow-400 animate-pulse' : 'bg-[#ff4757]';
@@ -262,13 +264,26 @@ export default function Terminal() {
                       width={80}
                     />
                     <Tooltip content={<ChartTooltip />} />
-                    {priceHistory.length > 0 && (
+                    {markets5m.filter(m => m.referencePrice).map((m, i) => (
                       <ReferenceLine
-                        y={priceHistory[0].price}
-                        stroke="rgba(108,92,231,0.3)"
-                        strokeDasharray="4 4"
+                        key={`ref5m-${i}`}
+                        y={m.referencePrice!}
+                        stroke="#00d4ff"
+                        strokeDasharray="6 4"
+                        strokeWidth={1.5}
+                        label={{ value: `5m: $${m.referencePrice!.toLocaleString()}`, position: 'right', fill: '#00d4ff', fontSize: 10, fontWeight: 600 }}
                       />
-                    )}
+                    ))}
+                    {markets15m.filter(m => m.referencePrice).map((m, i) => (
+                      <ReferenceLine
+                        key={`ref15m-${i}`}
+                        y={m.referencePrice!}
+                        stroke="#ff9f43"
+                        strokeDasharray="6 4"
+                        strokeWidth={1.5}
+                        label={{ value: `15m: $${m.referencePrice!.toLocaleString()}`, position: 'left', fill: '#ff9f43', fontSize: 10, fontWeight: 600 }}
+                      />
+                    ))}
                     <Area
                       type="monotone"
                       dataKey="price"
@@ -287,8 +302,8 @@ export default function Terminal() {
 
           {/* ── MARKET CARDS (5m and 15m side by side) ── */}
           <div className="px-4 pb-4 grid grid-cols-2 gap-4" style={{ height: '220px', minHeight: '220px' }}>
-            <MarketPanel label="5 MIN" color="#3b82f6" markets={markets5m} />
-            <MarketPanel label="15 MIN" color="#8b5cf6" markets={markets15m} />
+            <MarketPanel label="5 MIN" color="#3b82f6" markets={markets5m} btcPrice={btcPrice} />
+            <MarketPanel label="15 MIN" color="#8b5cf6" markets={markets15m} btcPrice={btcPrice} />
           </div>
         </div>
 
@@ -401,7 +416,7 @@ export default function Terminal() {
 }
 
 // ─── Market Panel ────────────────────────────────────────────────────────────
-function MarketPanel({ label, color, markets }: { label: string; color: string; markets: Market[] }) {
+function MarketPanel({ label, color, markets, btcPrice }: { label: string; color: string; markets: Market[]; btcPrice: number | null }) {
   // Show up to 2 markets
   const market = markets.length > 0 ? markets[0] : null;
   const hasMultiple = markets.length > 1;
@@ -433,28 +448,42 @@ function MarketPanel({ label, color, markets }: { label: string; color: string; 
           </div>
         </div>
       ) : (
-        <MarketContent market={market} />
+        <MarketContent market={market} btcPrice={btcPrice} />
       )}
     </div>
   );
 }
 
-function MarketContent({ market }: { market: Market }) {
+function MarketContent({ market, btcPrice }: { market: Market; btcPrice: number | null }) {
   const timeLeft = useCountdown(market.endDate);
   const isUrgent = timeLeft > 0 && timeLeft < 30000;
   const upPct = market.outcomePrices[0] != null ? (market.outcomePrices[0] * 100) : 0;
   const downPct = market.outcomePrices[1] != null ? (market.outcomePrices[1] * 100) : 0;
 
+  // Current direction vs reference price
+  const refPrice = market.referencePrice;
+  const hasDirection = refPrice != null && btcPrice != null;
+  const isUp = hasDirection ? btcPrice! >= refPrice! : null;
+  const priceDiff = hasDirection ? Math.abs(btcPrice! - refPrice!) : 0;
+  const priceDiffPct = hasDirection && refPrice ? (priceDiff / refPrice * 100) : 0;
+
   return (
     <>
-      {/* Countdown */}
+      {/* Countdown + Direction */}
       <div className="flex items-center justify-between mb-3">
         <span className={`text-xl font-bold tabular-nums ${
           timeLeft <= 0 ? 'text-gray-600' : isUrgent ? 'text-[#ff4757] animate-pulse-red' : 'text-white'
         }`} style={isUrgent ? { textShadow: '0 0 12px rgba(255,71,87,0.6)' } : {}}>
           {formatCountdown(timeLeft)}
         </span>
-        <span className="text-[10px] text-gray-600">{timeLeft > 0 ? 'until close' : 'closed'}</span>
+        {hasDirection && timeLeft > 0 ? (
+          <span className={`text-xs font-bold tabular-nums ${isUp ? 'text-[#00ff88]' : 'text-[#ff4757]'}`}
+            style={{ textShadow: isUp ? '0 0 10px rgba(0,255,136,0.4)' : '0 0 10px rgba(255,71,87,0.4)' }}>
+            {isUp ? 'UP' : 'DOWN'} {isUp ? '+' : '-'}${priceDiff.toFixed(0)} ({priceDiffPct.toFixed(2)}%)
+          </span>
+        ) : (
+          <span className="text-[10px] text-gray-600">{timeLeft > 0 ? 'until close' : 'closed'}</span>
+        )}
       </div>
 
       {/* Price bars */}

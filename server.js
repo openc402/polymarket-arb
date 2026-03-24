@@ -169,6 +169,19 @@ async function fetchMarket(slug) {
     let clobTokenIds = [];
     try { clobTokenIds = JSON.parse(m.clobTokenIds || '[]'); } catch { clobTokenIds = []; }
 
+    // Try to extract reference price from market description
+    let referencePrice = null;
+    const desc = m.description || event.description || '';
+    const priceMatch = desc.match(/\$([0-9,]+(?:\.[0-9]+)?)/);
+    if (priceMatch) {
+      referencePrice = parseFloat(priceMatch[1].replace(/,/g, ''));
+      if (isNaN(referencePrice)) referencePrice = null;
+    }
+    // Fallback: use current BTC price at time of discovery
+    if (!referencePrice && btcPrice) {
+      referencePrice = btcPrice;
+    }
+
     return {
       slug,
       conditionId: m.conditionId,
@@ -179,6 +192,7 @@ async function fetchMarket(slug) {
       endDate: m.endDate || event.endDate,
       active: m.active,
       closed: m.closed,
+      referencePrice,
     };
   } catch (e) {
     console.warn(`[MARKET] Failed to fetch ${slug}:`, e.message);
@@ -360,6 +374,7 @@ function buildPayload() {
         type: m.type,
         active: m.active,
         clobTokenIds: m.clobTokenIds,
+        referencePrice: m.referencePrice,
       })),
       portfolio: {
         balance: state.balance,
