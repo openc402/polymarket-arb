@@ -476,47 +476,54 @@ function MarketContent({ market, btcPrice }: { market: Market; btcPrice: number 
   const timeLeft = Math.min(rawTimeLeft, maxDuration);
   const isUrgent = timeLeft > 0 && timeLeft < 30000;
 
-  // Live CLOB prices (primary), outcomePrices as fallback
-  const hasLive = market.upMid != null && market.downMid != null;
-  const upPrice = hasLive ? market.upMid! : (market.outcomePrices[0] ?? 0);
-  const downPrice = hasLive ? market.downMid! : (market.outcomePrices[1] ?? 0);
-  const upCents = upPrice * 100;
-  const downCents = downPrice * 100;
-  const midPrice = upPrice + downPrice;
+  // CLOB midpoint is the TRUE price
+  const upMid = market.upMid;
+  const downMid = market.downMid;
+  const hasMid = upMid != null && downMid != null;
+
+  // Buy prices — what Polymarket shows as "Up Xc" / "Down Xc"
+  const upBuyCents = market.upBuy != null ? market.upBuy * 100 : null;
+  const downBuyCents = market.downBuy != null ? market.downBuy * 100 : null;
 
   // Direction vs reference price
   const refPrice = market.referencePrice;
   const hasDirection = refPrice != null && btcPrice != null;
   const isUp = hasDirection ? btcPrice! >= refPrice! : null;
   const priceDiff = hasDirection ? btcPrice! - refPrice! : 0;
-  const absDiff = Math.abs(priceDiff);
-  const priceDiffPct = hasDirection && refPrice ? (absDiff / refPrice * 100) : 0;
+  const priceDiffPct = hasDirection && refPrice ? (Math.abs(priceDiff) / refPrice * 100) : 0;
 
-  // Proportional bar widths
-  const total = upCents + downCents;
-  const upBarPct = total > 0 ? (upCents / total) * 100 : 50;
-  const downBarPct = total > 0 ? (downCents / total) * 100 : 50;
+  // Proportional bar widths from buy prices
+  const upVal = upBuyCents ?? (upMid != null ? upMid * 100 : 50);
+  const downVal = downBuyCents ?? (downMid != null ? downMid * 100 : 50);
+  const total = upVal + downVal;
+  const upBarPct = total > 0 ? (upVal / total) * 100 : 50;
+  const downBarPct = total > 0 ? (downVal / total) * 100 : 50;
 
   return (
     <>
-      {/* Direction Indicator — prominent */}
-      {hasDirection && timeLeft > 0 ? (
-        <div className={`flex items-center justify-center gap-2 mb-2 py-1.5 rounded-lg ${
-          isUp ? 'bg-[#00ff88]/10' : 'bg-[#ff4757]/10'
-        }`} style={{ border: `1px solid ${isUp ? 'rgba(0,255,136,0.2)' : 'rgba(255,71,87,0.2)'}` }}>
-          <span className={`text-lg font-bold ${isUp ? 'text-[#00ff88]' : 'text-[#ff4757]'}`}
-            style={{ textShadow: isUp ? '0 0 12px rgba(0,255,136,0.5)' : '0 0 12px rgba(255,71,87,0.5)' }}>
-            {isUp ? '▲' : '▼'}
-          </span>
-          <span className={`text-sm font-bold tabular-nums ${isUp ? 'text-[#00ff88]' : 'text-[#ff4757]'}`}>
-            BTC {isUp ? 'UP' : 'DOWN'} {priceDiff >= 0 ? '+' : ''}{priceDiff.toFixed(0)} ({priceDiffPct.toFixed(2)}%)
-          </span>
+      {/* Reference price + Current price */}
+      {refPrice != null && (
+        <div className="mb-2 py-1.5 px-2 rounded-lg" style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.06)' }}>
+          <div className="flex items-center justify-between mb-1">
+            <span className="text-[10px] text-gray-500 font-semibold">Price to beat</span>
+            <span className="text-sm font-bold text-white tabular-nums">
+              ${refPrice.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 0 })}
+            </span>
+          </div>
+          {hasDirection && (
+            <div className="flex items-center justify-between">
+              <span className="text-[10px] text-gray-500 font-semibold">Current</span>
+              <span className={`text-sm font-bold tabular-nums ${isUp ? 'text-[#00ff88]' : 'text-[#ff4757]'}`}
+                style={{ textShadow: isUp ? '0 0 10px rgba(0,255,136,0.4)' : '0 0 10px rgba(255,71,87,0.4)' }}>
+                ${btcPrice!.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 0 })}
+                {' '}{isUp ? '▲' : '▼'} ${Math.abs(priceDiff).toFixed(0)} ({priceDiffPct.toFixed(2)}%)
+              </span>
+            </div>
+          )}
         </div>
-      ) : (
-        <div className="mb-2" />
       )}
 
-      {/* Countdown */}
+      {/* Countdown + mid price */}
       <div className="flex items-center justify-between mb-2">
         <span className={`text-lg font-bold tabular-nums ${
           timeLeft <= 0 ? 'text-gray-600' : isUrgent ? 'text-[#ff4757] animate-pulse-red' : 'text-white'
@@ -524,49 +531,40 @@ function MarketContent({ market, btcPrice }: { market: Market; btcPrice: number 
           {formatCountdown(timeLeft)}
         </span>
         <span className="text-[10px] tabular-nums flex items-center gap-2">
-          {hasLive && <span className="text-[#00ff88] font-bold">LIVE</span>}
-          <span className="text-gray-500">Mid: {midPrice.toFixed(3)}</span>
-          <span className="text-gray-600">{hasLive ? 'CLOB' : 'gamma'}</span>
+          {hasMid && <span className="text-[#00ff88] font-bold">LIVE</span>}
+          {hasMid && <span className="text-gray-500">Mid: {(upMid + downMid).toFixed(3)}</span>}
         </span>
       </div>
 
-      {/* Up / Down prices with Buy/Sell from CLOB */}
+      {/* Up / Down buy prices — Polymarket style */}
       <div className="flex gap-3 mb-1">
         <div className="flex-1">
           <div className="flex items-baseline justify-between mb-1">
             <span className="text-[10px] text-gray-500 font-semibold uppercase">Up</span>
-            <span className="text-base font-bold text-[#00ff88] tabular-nums">
-              {upCents.toFixed(1)}&cent;
-              {hasLive && <span className="text-[9px] text-gray-500 ml-1">mid</span>}
+            <span className="text-xl font-bold text-[#00ff88] tabular-nums"
+              style={{ textShadow: '0 0 12px rgba(0,255,136,0.3)' }}>
+              {upBuyCents != null ? `${upBuyCents.toFixed(0)}\u00A2` : hasMid ? `${(upMid! * 100).toFixed(0)}\u00A2` : '\u2014'}
             </span>
           </div>
-          {market.upBuy != null && market.upSell != null ? (
+          {market.upSell != null && (
             <div className="text-[9px] text-gray-500 tabular-nums">
-              Buy {(market.upBuy * 100).toFixed(1)}&cent; / Sell {(market.upSell * 100).toFixed(1)}&cent;
+              Sell {(market.upSell * 100).toFixed(1)}&cent;
             </div>
-          ) : market.upBook.bestBid.price > 0 || market.upBook.bestAsk.price > 0 ? (
-            <div className="text-[9px] text-gray-600 tabular-nums">
-              Bid {market.upBook.bestBid.price.toFixed(3)} / Ask {market.upBook.bestAsk.price.toFixed(3)}
-            </div>
-          ) : null}
+          )}
         </div>
         <div className="flex-1">
           <div className="flex items-baseline justify-between mb-1">
             <span className="text-[10px] text-gray-500 font-semibold uppercase">Down</span>
-            <span className="text-base font-bold text-[#ff4757] tabular-nums">
-              {downCents.toFixed(1)}&cent;
-              {hasLive && <span className="text-[9px] text-gray-500 ml-1">mid</span>}
+            <span className="text-xl font-bold text-[#ff4757] tabular-nums"
+              style={{ textShadow: '0 0 12px rgba(255,71,87,0.3)' }}>
+              {downBuyCents != null ? `${downBuyCents.toFixed(0)}\u00A2` : hasMid ? `${(downMid! * 100).toFixed(0)}\u00A2` : '\u2014'}
             </span>
           </div>
-          {market.downBuy != null && market.downSell != null ? (
+          {market.downSell != null && (
             <div className="text-[9px] text-gray-500 tabular-nums">
-              Buy {(market.downBuy * 100).toFixed(1)}&cent; / Sell {(market.downSell * 100).toFixed(1)}&cent;
+              Sell {(market.downSell * 100).toFixed(1)}&cent;
             </div>
-          ) : market.downBook.bestBid.price > 0 || market.downBook.bestAsk.price > 0 ? (
-            <div className="text-[9px] text-gray-600 tabular-nums">
-              Bid {market.downBook.bestBid.price.toFixed(3)} / Ask {market.downBook.bestAsk.price.toFixed(3)}
-            </div>
-          ) : null}
+          )}
         </div>
       </div>
 
