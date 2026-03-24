@@ -221,17 +221,23 @@ async function fetchOrderbook(tokenId) {
 }
 
 // ─── Arb Calc & Paper Trading ─────────────────────────────────────────────────
-function calcArbitrage(upBook, downBook) {
-  const bestAskUp = upBook.bestAsk.price;
-  const bestAskDown = downBook.bestAsk.price;
+function calcArbitrage(upBook, downBook, outcomePrices) {
+  const bookAskUp = upBook.bestAsk.price;
+  const bookAskDown = downBook.bestAsk.price;
+  const hasOrderbook = bookAskUp > 0 && bookAskDown > 0;
+
+  // Use orderbook asks if available, otherwise fall back to outcomePrices (mid-market)
+  const bestAskUp = hasOrderbook ? bookAskUp : (outcomePrices?.[0] || 0);
+  const bestAskDown = hasOrderbook ? bookAskDown : (outcomePrices?.[1] || 0);
+
   if (bestAskUp <= 0 || bestAskDown <= 0) {
-    return { profitable: false, spread: 0, cost: 0, profit: 0 };
+    return { profitable: false, spread: 0, cost: 0, profit: 0, source: 'none' };
   }
   const cost = bestAskUp + bestAskDown;
   const spread = (1 - cost) * 100;
   const profitable = spread > MIN_SPREAD_PCT;
   const profit = profitable ? (1 - cost) * TRADE_SIZE : 0;
-  return { profitable, spread, cost, profit, bestAskUp, bestAskDown };
+  return { profitable, spread, cost, profit, bestAskUp, bestAskDown, source: hasOrderbook ? 'orderbook' : 'outcomePrices' };
 }
 
 function executeTrade(marketInfo, arb) {
@@ -361,7 +367,7 @@ async function orderbookLoop() {
           const downBook = await fetchOrderbook(downTokenId);
           market.upBook = upBook;
           market.downBook = downBook;
-          market.arb = calcArbitrage(upBook, downBook);
+          market.arb = calcArbitrage(upBook, downBook, market.outcomePrices);
           market.timeLeft = endTime - Date.now();
 
           // Auto-trade on arb

@@ -157,8 +157,9 @@ export default function Terminal() {
 
   // Derived — filter out expired/closed markets
   const liveMarkets = markets.filter(m => new Date(m.endDate).getTime() > Date.now());
-  const markets5m = liveMarkets.filter(m => m.type === '5m');
-  const markets15m = liveMarkets.filter(m => m.type === '15m');
+  // Pick the soonest-expiring market per type (the one currently active, not the future one)
+  const markets5m = liveMarkets.filter(m => m.type === '5m').sort((a, b) => new Date(a.endDate).getTime() - new Date(b.endDate).getTime()).slice(0, 1);
+  const markets15m = liveMarkets.filter(m => m.type === '15m').sort((a, b) => new Date(a.endDate).getTime() - new Date(b.endDate).getTime()).slice(0, 1);
   const priceUp = btcPrice != null && prevBtcPrice != null ? btcPrice >= prevBtcPrice : true;
   const priceChange = priceHistory.length >= 2
     ? ((priceHistory[priceHistory.length - 1].price - priceHistory[0].price) / priceHistory[0].price * 100)
@@ -464,73 +465,103 @@ function MarketPanel({ label, color, markets, btcPrice }: { label: string; color
 
 function MarketContent({ market, btcPrice }: { market: Market; btcPrice: number | null }) {
   const rawTimeLeft = useCountdown(market.endDate);
-  // Cap countdown to market duration so 5m markets never show > 5:00
   const maxDuration = market.type === '5m' ? 300000 : 900000;
   const timeLeft = Math.min(rawTimeLeft, maxDuration);
   const isUrgent = timeLeft > 0 && timeLeft < 30000;
-  const upPct = market.outcomePrices[0] != null ? (market.outcomePrices[0] * 100) : 0;
-  const downPct = market.outcomePrices[1] != null ? (market.outcomePrices[1] * 100) : 0;
 
-  // Current direction vs reference price
+  // Prices from outcomePrices (primary source) — displayed as cents
+  const upPrice = market.outcomePrices[0] ?? 0;
+  const downPrice = market.outcomePrices[1] ?? 0;
+  const upCents = upPrice * 100;
+  const downCents = downPrice * 100;
+  const midPrice = upPrice + downPrice;
+
+  // Orderbook data — only show when actually present
+  const hasUpBook = market.upBook.bestBid.price > 0 || market.upBook.bestAsk.price > 0;
+  const hasDownBook = market.downBook.bestBid.price > 0 || market.downBook.bestAsk.price > 0;
+
+  // Direction vs reference price
   const refPrice = market.referencePrice;
   const hasDirection = refPrice != null && btcPrice != null;
   const isUp = hasDirection ? btcPrice! >= refPrice! : null;
-  const priceDiff = hasDirection ? Math.abs(btcPrice! - refPrice!) : 0;
-  const priceDiffPct = hasDirection && refPrice ? (priceDiff / refPrice * 100) : 0;
+  const priceDiff = hasDirection ? btcPrice! - refPrice! : 0;
+  const absDiff = Math.abs(priceDiff);
+  const priceDiffPct = hasDirection && refPrice ? (absDiff / refPrice * 100) : 0;
+
+  // Proportional bar widths
+  const total = upCents + downCents;
+  const upBarPct = total > 0 ? (upCents / total) * 100 : 50;
+  const downBarPct = total > 0 ? (downCents / total) * 100 : 50;
 
   return (
     <>
-      {/* Countdown + Direction */}
-      <div className="flex items-center justify-between mb-3">
-        <span className={`text-xl font-bold tabular-nums ${
+      {/* Direction Indicator — prominent */}
+      {hasDirection && timeLeft > 0 ? (
+        <div className={`flex items-center justify-center gap-2 mb-2 py-1.5 rounded-lg ${
+          isUp ? 'bg-[#00ff88]/10' : 'bg-[#ff4757]/10'
+        }`} style={{ border: `1px solid ${isUp ? 'rgba(0,255,136,0.2)' : 'rgba(255,71,87,0.2)'}` }}>
+          <span className={`text-lg font-bold ${isUp ? 'text-[#00ff88]' : 'text-[#ff4757]'}`}
+            style={{ textShadow: isUp ? '0 0 12px rgba(0,255,136,0.5)' : '0 0 12px rgba(255,71,87,0.5)' }}>
+            {isUp ? '▲' : '▼'}
+          </span>
+          <span className={`text-sm font-bold tabular-nums ${isUp ? 'text-[#00ff88]' : 'text-[#ff4757]'}`}>
+            BTC {isUp ? 'UP' : 'DOWN'} {priceDiff >= 0 ? '+' : ''}{priceDiff.toFixed(0)} ({priceDiffPct.toFixed(2)}%)
+          </span>
+        </div>
+      ) : (
+        <div className="mb-2" />
+      )}
+
+      {/* Countdown */}
+      <div className="flex items-center justify-between mb-2">
+        <span className={`text-lg font-bold tabular-nums ${
           timeLeft <= 0 ? 'text-gray-600' : isUrgent ? 'text-[#ff4757] animate-pulse-red' : 'text-white'
         }`} style={isUrgent ? { textShadow: '0 0 12px rgba(255,71,87,0.6)' } : {}}>
           {formatCountdown(timeLeft)}
         </span>
-        {hasDirection && timeLeft > 0 ? (
-          <span className={`text-xs font-bold tabular-nums ${isUp ? 'text-[#00ff88]' : 'text-[#ff4757]'}`}
-            style={{ textShadow: isUp ? '0 0 10px rgba(0,255,136,0.4)' : '0 0 10px rgba(255,71,87,0.4)' }}>
-            {isUp ? 'UP' : 'DOWN'} {isUp ? '+' : '-'}${priceDiff.toFixed(0)} ({priceDiffPct.toFixed(2)}%)
-          </span>
-        ) : (
-          <span className="text-[10px] text-gray-600">{timeLeft > 0 ? 'until close' : 'closed'}</span>
-        )}
+        <span className="text-[10px] text-gray-500 tabular-nums">
+          Mid: {midPrice.toFixed(3)}
+        </span>
       </div>
 
-      {/* Price bars */}
-      <div className="flex gap-3 flex-1">
+      {/* Up / Down prices with proportional bar */}
+      <div className="flex gap-3 mb-1">
         <div className="flex-1">
           <div className="flex items-baseline justify-between mb-1">
             <span className="text-[10px] text-gray-500 font-semibold uppercase">Up</span>
-            <span className="text-sm font-bold text-[#00ff88] tabular-nums">{upPct.toFixed(1)}%</span>
+            <span className="text-base font-bold text-[#00ff88] tabular-nums">{upCents.toFixed(1)}&cent;</span>
           </div>
-          <div className="h-2 rounded-full overflow-hidden" style={{ background: 'rgba(0,255,136,0.08)' }}>
-            <div className="h-full rounded-full transition-all duration-500" style={{ width: `${Math.min(upPct, 100)}%`, background: 'linear-gradient(90deg, #00ff88, #00cc6a)' }} />
-          </div>
-          <div className="text-[10px] text-gray-600 mt-1 tabular-nums">
-            Bid {market.upBook.bestBid.price.toFixed(3)} / Ask {market.upBook.bestAsk.price.toFixed(3)}
-          </div>
+          {hasUpBook && (
+            <div className="text-[9px] text-gray-600 tabular-nums">
+              Bid {market.upBook.bestBid.price.toFixed(3)} / Ask {market.upBook.bestAsk.price.toFixed(3)}
+            </div>
+          )}
         </div>
         <div className="flex-1">
           <div className="flex items-baseline justify-between mb-1">
             <span className="text-[10px] text-gray-500 font-semibold uppercase">Down</span>
-            <span className="text-sm font-bold text-[#ff4757] tabular-nums">{downPct.toFixed(1)}%</span>
+            <span className="text-base font-bold text-[#ff4757] tabular-nums">{downCents.toFixed(1)}&cent;</span>
           </div>
-          <div className="h-2 rounded-full overflow-hidden" style={{ background: 'rgba(255,71,87,0.08)' }}>
-            <div className="h-full rounded-full transition-all duration-500" style={{ width: `${Math.min(downPct, 100)}%`, background: 'linear-gradient(90deg, #ff4757, #cc3a47)' }} />
-          </div>
-          <div className="text-[10px] text-gray-600 mt-1 tabular-nums">
-            Bid {market.downBook.bestBid.price.toFixed(3)} / Ask {market.downBook.bestAsk.price.toFixed(3)}
-          </div>
+          {hasDownBook && (
+            <div className="text-[9px] text-gray-600 tabular-nums">
+              Bid {market.downBook.bestBid.price.toFixed(3)} / Ask {market.downBook.bestAsk.price.toFixed(3)}
+            </div>
+          )}
         </div>
       </div>
 
-      {/* Arb spread indicator */}
+      {/* Proportional Up vs Down bar */}
+      <div className="flex h-2.5 rounded-full overflow-hidden mb-1" style={{ background: 'rgba(255,255,255,0.04)' }}>
+        <div className="h-full rounded-l-full transition-all duration-500" style={{ width: `${upBarPct}%`, background: 'linear-gradient(90deg, #00ff88, #00cc6a)' }} />
+        <div className="h-full rounded-r-full transition-all duration-500" style={{ width: `${downBarPct}%`, background: 'linear-gradient(90deg, #ff4757, #cc3a47)' }} />
+      </div>
+
+      {/* Arb / cost info */}
       {market.arb && market.arb.cost > 0 && (
-        <div className="mt-2 pt-2 border-t border-white/[0.04] flex items-center justify-between">
-          <span className="text-[10px] text-gray-600">Combined Cost</span>
+        <div className="mt-1 pt-1 border-t border-white/[0.04] flex items-center justify-between">
+          <span className="text-[10px] text-gray-600">Arb Cost</span>
           <span className={`text-xs font-bold tabular-nums ${market.arb.cost < 1 ? 'text-[#00ff88]' : 'text-[#ff4757]'}`}>
-            {market.arb.cost.toFixed(4)}
+            {market.arb.cost.toFixed(4)} {market.arb.spread > 0 ? `(+${market.arb.spread.toFixed(2)}%)` : ''}
           </span>
         </div>
       )}
