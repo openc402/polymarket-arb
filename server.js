@@ -15,8 +15,7 @@ const TRADE_SIZE = 50;
 
 const MARKET_SCAN_INTERVAL = 30000;   // 30s between market discovery (faster for 5min transitions)
 const ORDERBOOK_INTERVAL = 60000;     // 60s between orderbook refreshes (depth info only)
-const LIVE_PRICE_INTERVAL = 2000;     // 2s between live CLOB price fetches (last-trade-price is lightweight)
-const LIVE_PRICE_CALL_DELAY = 300;    // 300ms between individual CLOB price calls
+const LIVE_PRICE_INTERVAL = 1000;     // 1s between live last-trade-price fetches (lightweight endpoint ~50ms)
 const GAMMA_RATE_LIMIT = 5000;        // 5s between gamma requests
 const CLOB_RATE_LIMIT = 2000;         // 2s between clob requests
 const BTC_HISTORY_MAX = 300;          // ~5 min of per-second data
@@ -222,7 +221,21 @@ async function fetchOrderbook(tokenId) {
   }
 }
 
-// ─── Live CLOB Prices (midpoint + buy/sell) ──────────────────────────────────
+// ─── Direct fetch for last-trade-price (no rate limiting, ~50ms response) ────
+async function fetchLastTradePrice(tokenId) {
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 5000);
+    const res = await fetch(`${CLOB_API}/last-trade-price?token_id=${tokenId}`, { signal: controller.signal });
+    clearTimeout(timeout);
+    if (!res.ok) return null;
+    return await res.json();
+  } catch {
+    return null;
+  }
+}
+
+// ─── Rate-limited CLOB fetch for midpoint/buy/sell (uses clob rate limit) ────
 async function fetchClobPrice(endpoint, tokenId, params) {
   try {
     let url = `${CLOB_API}/${endpoint}?token_id=${tokenId}`;
@@ -238,41 +251,45 @@ async function fetchClobPrice(endpoint, tokenId, params) {
   }
 }
 
+// ─── Live last-trade-price fetch (parallel, no rate limit) ───────────────────
 async function fetchLivePrices(market) {
   if (!market.clobTokenIds || market.clobTokenIds.length < 2) return;
   const upToken = market.clobTokenIds[0];
   const downToken = market.clobTokenIds[1];
   if (!upToken || !downToken || upToken === downToken) return;
 
-  // Fetch last-trade-price first (lightweight, most accurate — what Polymarket displays)
-  const upLastRes = await fetchClobPrice('last-trade-price', upToken);
-  await sleep(LIVE_PRICE_CALL_DELAY);
-  const downLastRes = await fetchClobPrice('last-trade-price', downToken);
-  await sleep(LIVE_PRICE_CALL_DELAY);
+  // Fetch BOTH tokens' last-trade-price in PARALLEL — no rate limit delay
+  const [upLastRes, downLastRes] = await Promise.all([
+    fetchLastTradePrice(upToken),
+    fetchLastTradePrice(downToken),
+  ]);
 
   // Last trade price is the PRIMARY display price (matches Polymarket's "Up Xc" / "Down Xc")
   const upLastVal = upLastRes?.price != null ? parseFloat(upLastRes.price) : null;
   const downLastVal = downLastRes?.price != null ? parseFloat(downLastRes.price) : null;
   market.upLastPrice = upLastVal && upLastVal > 0 ? upLastVal : null;
   market.downLastPrice = downLastVal && downLastVal > 0 ? downLastVal : null;
+  market.livePriceTime = Date.now();
+}
 
-  // Midpoint as secondary/fallback
-  const upMidRes = await fetchClobPrice('midpoint', upToken);
-  await sleep(LIVE_PRICE_CALL_DELAY);
-  const downMidRes = await fetchClobPrice('midpoint', downToken);
-  await sleep(LIVE_PRICE_CALL_DELAY);
+// ─── Secondary price data (midpoint, buy/sell) — fetched less frequently ─────
+async function fetchSecondaryPrices(market) {
+  if (!market.clobTokenIds || market.clobTokenIds.length < 2) return;
+  const upToken = market.clobTokenIds[0];
+  const downToken = market.clobTokenIds[1];
+  if (!upToken || !downToken || upToken === downToken) return;
+
+  const [upMidRes, downMidRes, upBuyRes, upSellRes, downBuyRes, downSellRes] = await Promise.all([
+    fetchClobPrice('midpoint', upToken),
+    fetchClobPrice('midpoint', downToken),
+    fetchClobPrice('price', upToken, 'side=buy'),
+    fetchClobPrice('price', upToken, 'side=sell'),
+    fetchClobPrice('price', downToken, 'side=buy'),
+    fetchClobPrice('price', downToken, 'side=sell'),
+  ]);
 
   market.upMid = upMidRes?.mid != null ? parseFloat(upMidRes.mid) : null;
   market.downMid = downMidRes?.mid != null ? parseFloat(downMidRes.mid) : null;
-
-  // Buy/sell prices for spread info
-  const upBuyRes = await fetchClobPrice('price', upToken, 'side=buy');
-  await sleep(LIVE_PRICE_CALL_DELAY);
-  const upSellRes = await fetchClobPrice('price', upToken, 'side=sell');
-  await sleep(LIVE_PRICE_CALL_DELAY);
-  const downBuyRes = await fetchClobPrice('price', downToken, 'side=buy');
-  await sleep(LIVE_PRICE_CALL_DELAY);
-  const downSellRes = await fetchClobPrice('price', downToken, 'side=sell');
 
   const upBuyVal = upBuyRes?.price != null ? parseFloat(upBuyRes.price) : null;
   const upSellVal = upSellRes?.price != null ? parseFloat(upSellRes.price) : null;
@@ -282,24 +299,37 @@ async function fetchLivePrices(market) {
   market.upSell = upSellVal && upSellVal > 0 ? upSellVal : null;
   market.downBuy = downBuyVal && downBuyVal > 0 ? downBuyVal : null;
   market.downSell = downSellVal && downSellVal > 0 ? downSellVal : null;
-  market.livePriceTime = Date.now();
 }
 
-// ─── Live Price Loop (every 10s) ─────────────────────────────────────────────
+// ─── Live Price Loop (every 1s — last-trade-price only, parallel, no rate limit)
 async function livePriceLoop() {
+  while (true) {
+    try {
+      const active = activeMarkets.filter(m => new Date(m.endDate).getTime() > Date.now());
+      // Fetch all markets' last-trade-prices in parallel
+      await Promise.all(active.map(market => fetchLivePrices(market)));
+      const count = active.filter(m => m.livePriceTime).length;
+      if (count > 0) console.log(`[LIVE PRICES] Updated ${count} markets (1s interval)`);
+    } catch (e) {
+      console.error('[LIVE PRICES] Error:', e.message);
+    }
+    await sleep(LIVE_PRICE_INTERVAL);
+  }
+}
+
+// ─── Secondary Price Loop (every 10s — midpoint, buy/sell for spread info) ───
+async function secondaryPriceLoop() {
   while (true) {
     try {
       for (const market of activeMarkets) {
         const endTime = new Date(market.endDate).getTime();
         if (endTime <= Date.now()) continue;
-        await fetchLivePrices(market);
+        await fetchSecondaryPrices(market);
       }
-      const count = activeMarkets.filter(m => m.livePriceTime).length;
-      if (count > 0) console.log(`[LIVE PRICES] Updated ${count} markets`);
     } catch (e) {
-      console.error('[LIVE PRICES] Error:', e.message);
+      console.error('[SECONDARY PRICES] Error:', e.message);
     }
-    await sleep(LIVE_PRICE_INTERVAL);
+    await sleep(10000);
   }
 }
 
@@ -588,7 +618,7 @@ server.listen(PORT, '0.0.0.0', () => {
   ║  HTTP:  http://localhost:${PORT}               ║
   ║  WS:    ws://localhost:${PORT}                 ║
   ║  BTC:   Binance real-time WebSocket          ║
-  ║  Live CLOB prices: 2s  | Orderbooks: 60s    ║
+  ║  Live prices: 1s  | Orderbooks: 60s          ║
   ║  Markets: 30s scan                           ║
   ╚══════════════════════════════════════════════╝
   `);
@@ -599,5 +629,6 @@ server.listen(PORT, '0.0.0.0', () => {
   marketDiscoveryLoop();
   // Delay price loops to let market discovery populate first
   setTimeout(() => livePriceLoop(), 8000);
+  setTimeout(() => secondaryPriceLoop(), 10000);
   setTimeout(() => orderbookLoop(), 15000);
 });
