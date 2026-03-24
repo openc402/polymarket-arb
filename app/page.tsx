@@ -155,9 +155,10 @@ export default function Terminal() {
     return () => { clearTimeout(reconnectTimer.current); wsRef.current?.close(); };
   }, [handleMessage]);
 
-  // Derived
-  const markets5m = markets.filter(m => m.type === '5m');
-  const markets15m = markets.filter(m => m.type === '15m');
+  // Derived — filter out expired/closed markets
+  const liveMarkets = markets.filter(m => new Date(m.endDate).getTime() > Date.now());
+  const markets5m = liveMarkets.filter(m => m.type === '5m');
+  const markets15m = liveMarkets.filter(m => m.type === '15m');
   const priceUp = btcPrice != null && prevBtcPrice != null ? btcPrice >= prevBtcPrice : true;
   const priceChange = priceHistory.length >= 2
     ? ((priceHistory[priceHistory.length - 1].price - priceHistory[0].price) / priceHistory[0].price * 100)
@@ -170,7 +171,7 @@ export default function Terminal() {
     : 0;
 
   // Chart domain — include reference prices so lines are always visible
-  const refPrices = markets.map(m => m.referencePrice).filter((p): p is number => p != null);
+  const refPrices = liveMarkets.map(m => m.referencePrice).filter((p): p is number => p != null);
   const allChartPrices = [...priceHistory.map(p => p.price), ...refPrices];
   const minPrice = allChartPrices.length ? Math.min(...allChartPrices) : 0;
   const maxPrice = allChartPrices.length ? Math.max(...allChartPrices) : 100000;
@@ -264,26 +265,33 @@ export default function Terminal() {
                       width={80}
                     />
                     <Tooltip content={<ChartTooltip />} />
-                    {markets5m.filter(m => m.referencePrice).map((m, i) => (
-                      <ReferenceLine
-                        key={`ref5m-${i}`}
-                        y={m.referencePrice!}
-                        stroke="#00d4ff"
-                        strokeDasharray="6 4"
-                        strokeWidth={1.5}
-                        label={{ value: `5m: $${m.referencePrice!.toLocaleString()}`, position: 'right', fill: '#00d4ff', fontSize: 10, fontWeight: 600 }}
-                      />
-                    ))}
-                    {markets15m.filter(m => m.referencePrice).map((m, i) => (
-                      <ReferenceLine
-                        key={`ref15m-${i}`}
-                        y={m.referencePrice!}
-                        stroke="#ff9f43"
-                        strokeDasharray="6 4"
-                        strokeWidth={1.5}
-                        label={{ value: `15m: $${m.referencePrice!.toLocaleString()}`, position: 'left', fill: '#ff9f43', fontSize: 10, fontWeight: 600 }}
-                      />
-                    ))}
+                    {/* Show one reference line per market type — use first live market with a reference price */}
+                    {(() => {
+                      const ref5m = markets5m.find(m => m.referencePrice != null);
+                      return ref5m ? (
+                        <ReferenceLine
+                          key="ref5m"
+                          y={ref5m.referencePrice!}
+                          stroke="#00d4ff"
+                          strokeDasharray="6 4"
+                          strokeWidth={1.5}
+                          label={{ value: `5m: $${ref5m.referencePrice!.toLocaleString()}`, position: 'right', fill: '#00d4ff', fontSize: 10, fontWeight: 600 }}
+                        />
+                      ) : null;
+                    })()}
+                    {(() => {
+                      const ref15m = markets15m.find(m => m.referencePrice != null);
+                      return ref15m ? (
+                        <ReferenceLine
+                          key="ref15m"
+                          y={ref15m.referencePrice!}
+                          stroke="#ff9f43"
+                          strokeDasharray="6 4"
+                          strokeWidth={1.5}
+                          label={{ value: `15m: $${ref15m.referencePrice!.toLocaleString()}`, position: 'left', fill: '#ff9f43', fontSize: 10, fontWeight: 600 }}
+                        />
+                      ) : null;
+                    })()}
                     <Area
                       type="monotone"
                       dataKey="price"
@@ -455,7 +463,10 @@ function MarketPanel({ label, color, markets, btcPrice }: { label: string; color
 }
 
 function MarketContent({ market, btcPrice }: { market: Market; btcPrice: number | null }) {
-  const timeLeft = useCountdown(market.endDate);
+  const rawTimeLeft = useCountdown(market.endDate);
+  // Cap countdown to market duration so 5m markets never show > 5:00
+  const maxDuration = market.type === '5m' ? 300000 : 900000;
+  const timeLeft = Math.min(rawTimeLeft, maxDuration);
   const isUrgent = timeLeft > 0 && timeLeft < 30000;
   const upPct = market.outcomePrices[0] != null ? (market.outcomePrices[0] * 100) : 0;
   const downPct = market.outcomePrices[1] != null ? (market.outcomePrices[1] * 100) : 0;

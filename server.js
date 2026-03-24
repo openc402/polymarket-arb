@@ -13,7 +13,7 @@ const INITIAL_BALANCE = 10000;
 const MIN_SPREAD_PCT = 0.5;
 const TRADE_SIZE = 50;
 
-const MARKET_SCAN_INTERVAL = 90000;   // 90s between market discovery
+const MARKET_SCAN_INTERVAL = 30000;   // 30s between market discovery (faster for 5min transitions)
 const ORDERBOOK_INTERVAL = 30000;     // 30s between orderbook refreshes
 const GAMMA_RATE_LIMIT = 5000;        // 5s between gamma requests
 const CLOB_RATE_LIMIT = 2000;         // 2s between clob requests
@@ -144,13 +144,17 @@ function connectBinance() {
 function getMarketSlugs() {
   const now = Math.floor(Date.now() / 1000);
   const current5m = Math.floor(now / 300) * 300;
+  const next5m = current5m + 300;
   const current15m = Math.floor(now / 900) * 900;
+  const next15m = current15m + 900;
   const prev5m = current5m - 300;
   const prev15m = current15m - 900;
 
   return [
+    { slug: `btc-updown-5m-${next5m}`, type: '5m', ts: next5m },
     { slug: `btc-updown-5m-${current5m}`, type: '5m', ts: current5m },
     { slug: `btc-updown-5m-${prev5m}`, type: '5m', ts: prev5m },
+    { slug: `btc-updown-15m-${next15m}`, type: '15m', ts: next15m },
     { slug: `btc-updown-15m-${current15m}`, type: '15m', ts: current15m },
     { slug: `btc-updown-15m-${prev15m}`, type: '15m', ts: prev15m },
   ];
@@ -332,18 +336,40 @@ async function orderbookLoop() {
   while (true) {
     try {
       for (const market of activeMarkets) {
-        if (market.clobTokenIds.length >= 2) {
-          const upBook = await fetchOrderbook(market.clobTokenIds[0]);
-          const downBook = await fetchOrderbook(market.clobTokenIds[1]);
+        try {
+          // Skip expired markets
+          const endTime = new Date(market.endDate).getTime();
+          if (endTime <= Date.now()) continue;
+
+          // Need at least 2 distinct token IDs
+          if (market.clobTokenIds.length < 2) {
+            console.warn(`[ORDERBOOK] ${market.slug}: fewer than 2 token IDs, skipping`);
+            continue;
+          }
+          const upTokenId = market.clobTokenIds[0];
+          const downTokenId = market.clobTokenIds[1];
+          if (!upTokenId || !downTokenId) {
+            console.warn(`[ORDERBOOK] ${market.slug}: empty token ID, skipping`);
+            continue;
+          }
+          if (upTokenId === downTokenId) {
+            console.warn(`[ORDERBOOK] ${market.slug}: duplicate token IDs, skipping`);
+            continue;
+          }
+
+          const upBook = await fetchOrderbook(upTokenId);
+          const downBook = await fetchOrderbook(downTokenId);
           market.upBook = upBook;
           market.downBook = downBook;
           market.arb = calcArbitrage(upBook, downBook);
-          market.timeLeft = new Date(market.endDate).getTime() - Date.now();
+          market.timeLeft = endTime - Date.now();
 
           // Auto-trade on arb
           if (market.arb.profitable && market.timeLeft > 30000) {
             executeTrade(market, market.arb);
           }
+        } catch (e) {
+          console.warn(`[ORDERBOOK] Failed for ${market.slug}: ${e.message}`);
         }
       }
 
@@ -362,20 +388,22 @@ function buildPayload() {
     data: {
       btcPrice,
       btcHistory: btcHistory.slice(-BTC_HISTORY_MAX),
-      markets: activeMarkets.map(m => ({
-        slug: m.slug,
-        question: m.question,
-        endDate: m.endDate,
-        outcomePrices: m.outcomePrices || [],
-        upBook: m.upBook || { bestBid: { price: 0, size: 0 }, bestAsk: { price: 0, size: 0 } },
-        downBook: m.downBook || { bestBid: { price: 0, size: 0 }, bestAsk: { price: 0, size: 0 } },
-        arb: m.arb || { profitable: false, spread: 0, cost: 0, profit: 0 },
-        timeLeft: new Date(m.endDate).getTime() - Date.now(),
-        type: m.type,
-        active: m.active,
-        clobTokenIds: m.clobTokenIds,
-        referencePrice: m.referencePrice,
-      })),
+      markets: activeMarkets
+        .filter(m => new Date(m.endDate).getTime() > Date.now())
+        .map(m => ({
+          slug: m.slug,
+          question: m.question,
+          endDate: m.endDate,
+          outcomePrices: m.outcomePrices || [],
+          upBook: m.upBook || { bestBid: { price: 0, size: 0 }, bestAsk: { price: 0, size: 0 } },
+          downBook: m.downBook || { bestBid: { price: 0, size: 0 }, bestAsk: { price: 0, size: 0 } },
+          arb: m.arb || { profitable: false, spread: 0, cost: 0, profit: 0 },
+          timeLeft: new Date(m.endDate).getTime() - Date.now(),
+          type: m.type,
+          active: m.active,
+          clobTokenIds: m.clobTokenIds,
+          referencePrice: m.referencePrice,
+        })),
       portfolio: {
         balance: state.balance,
         totalPnl: state.totalPnl,
