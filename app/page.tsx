@@ -43,20 +43,20 @@ interface PortfolioState {
   portfolioHistory: { time: number; value: number }[];
 }
 
-interface WSMessage {
-  type: 'update' | 'init';
-  timestamp: number;
-  state: PortfolioState;
-  markets?: Market[];
-  btcPrice?: number | null;
-  scanCount?: number;
-  arbSignals?: { slug: string; spread: number; type: string }[];
-}
-
 interface PricePoint {
   time: string;
   price: number;
   timestamp: number;
+}
+
+interface WSMessage {
+  type: 'update';
+  data: {
+    btcPrice: number | null;
+    btcHistory: { time: number; price: number }[];
+    markets: Market[];
+    portfolio: PortfolioState;
+  };
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -107,37 +107,38 @@ export default function Terminal() {
   const [btcPrice, setBtcPrice] = useState<number | null>(null);
   const [prevBtcPrice, setPrevBtcPrice] = useState<number | null>(null);
   const [priceHistory, setPriceHistory] = useState<PricePoint[]>([]);
-  const [scanCount, setScanCount] = useState(0);
   const [wsStatus, setWsStatus] = useState<'connecting' | 'connected' | 'disconnected'>('connecting');
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimer = useRef<ReturnType<typeof setTimeout>>();
   const now = useClock();
 
   const handleMessage = useCallback((msg: WSMessage) => {
-    if (msg.state) setPortfolio(msg.state);
-    if (msg.markets) setMarkets(msg.markets);
-    if (msg.btcPrice != null) {
-      setBtcPrice(prev => {
-        setPrevBtcPrice(prev);
-        return msg.btcPrice!;
-      });
-      setPriceHistory(prev => {
-        const point: PricePoint = {
-          time: new Date().toLocaleTimeString(),
-          price: msg.btcPrice!,
-          timestamp: Date.now(),
-        };
-        const next = [...prev, point];
-        return next.length > 200 ? next.slice(-200) : next;
-      });
-    }
-    if (msg.scanCount !== undefined) setScanCount(msg.scanCount);
+    try {
+      if (msg.data.portfolio) setPortfolio(msg.data.portfolio);
+      if (msg.data.markets) setMarkets(msg.data.markets);
+      if (msg.data.btcPrice != null) {
+        setBtcPrice(prev => {
+          setPrevBtcPrice(prev);
+          return msg.data.btcPrice!;
+        });
+      }
+      // Convert server btcHistory to chart format
+      if (msg.data.btcHistory && msg.data.btcHistory.length > 0) {
+        setPriceHistory(
+          msg.data.btcHistory.map((p: { time: number; price: number }) => ({
+            time: new Date(p.time).toLocaleTimeString(),
+            price: p.price,
+            timestamp: p.time,
+          }))
+        );
+      }
+    } catch {}
   }, []);
 
   useEffect(() => {
     function connect() {
       setWsStatus('connecting');
-      const ws = new WebSocket('ws://localhost:3001');
+      const ws = new WebSocket(`ws://${window.location.host}`);
       wsRef.current = ws;
       ws.onopen = () => setWsStatus('connected');
       ws.onmessage = (e) => {
@@ -157,7 +158,7 @@ export default function Terminal() {
   const markets5m = markets.filter(m => m.type === '5m');
   const markets15m = markets.filter(m => m.type === '15m');
   const priceUp = btcPrice != null && prevBtcPrice != null ? btcPrice >= prevBtcPrice : true;
-  const priceChange24h = priceHistory.length >= 2
+  const priceChange = priceHistory.length >= 2
     ? ((priceHistory[priceHistory.length - 1].price - priceHistory[0].price) / priceHistory[0].price * 100)
     : 0;
   const chartColor = priceUp ? '#00ff88' : '#ff4757';
@@ -192,15 +193,16 @@ export default function Terminal() {
               ${btcPrice?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) ?? '---'}
             </span>
             {priceHistory.length >= 2 && (
-              <span className={`text-sm font-semibold tabular-nums ${priceChange24h >= 0 ? 'text-[#00ff88]' : 'text-[#ff4757]'}`}>
-                {priceChange24h >= 0 ? '+' : ''}{priceChange24h.toFixed(2)}%
+              <span className={`text-sm font-semibold tabular-nums ${priceChange >= 0 ? 'text-[#00ff88]' : 'text-[#ff4757]'}`}>
+                {priceChange >= 0 ? '+' : ''}{priceChange.toFixed(3)}%
               </span>
             )}
+            <span className="text-[10px] text-gray-600 ml-1">Binance</span>
           </div>
         </div>
         <div className="flex items-center gap-4">
           <div className="flex items-center gap-2 text-xs text-gray-500">
-            <span>Scans: <span className="text-gray-300 tabular-nums">{scanCount}</span></span>
+            <span>Markets: <span className="text-gray-300 tabular-nums">{markets.length}</span></span>
           </div>
           <div className="flex items-center gap-2">
             <div className={`w-2 h-2 rounded-full ${statusDot}`} style={wsStatus === 'connected' ? { boxShadow: '0 0 8px rgba(0,255,136,0.6)' } : {}} />
@@ -220,16 +222,21 @@ export default function Terminal() {
           {/* ── BTC CHART ── */}
           <div className="flex-1 min-h-0 p-4">
             <div className="h-full rounded-xl overflow-hidden" style={{ background: 'rgba(10,10,25,0.7)', border: '1px solid rgba(255,255,255,0.06)' }}>
+              <div className="px-4 pt-3 pb-1 flex items-center justify-between">
+                <span className="text-[10px] font-bold uppercase tracking-wider text-gray-500">BTC/USD — Last 5 min</span>
+                <span className="text-[10px] text-gray-600 tabular-nums">{priceHistory.length} data points</span>
+              </div>
               {priceHistory.length < 2 ? (
-                <div className="h-full flex items-center justify-center">
+                <div className="h-full flex items-center justify-center pb-10">
                   <div className="text-center">
                     <div className="w-10 h-10 border-2 border-[#6c5ce7]/30 border-t-[#6c5ce7] rounded-full animate-spin mx-auto mb-3" />
-                    <p className="text-sm text-gray-500">Waiting for price data...</p>
+                    <p className="text-sm text-gray-500">Connecting to Binance...</p>
+                    <p className="text-xs text-gray-600 mt-1">Real-time BTC price stream</p>
                   </div>
                 </div>
               ) : (
-                <ResponsiveContainer width="100%" height="100%">
-                  <AreaChart data={priceHistory} margin={{ top: 20, right: 30, bottom: 20, left: 20 }}>
+                <ResponsiveContainer width="100%" height="90%">
+                  <AreaChart data={priceHistory} margin={{ top: 10, right: 30, bottom: 20, left: 20 }}>
                     <defs>
                       <linearGradient id="priceGrad" x1="0" y1="0" x2="0" y2="1">
                         <stop offset="0%" stopColor={chartColor} stopOpacity={0.3} />
@@ -278,11 +285,9 @@ export default function Terminal() {
             </div>
           </div>
 
-          {/* ── MARKET CARDS (below chart) ── */}
+          {/* ── MARKET CARDS (5m and 15m side by side) ── */}
           <div className="px-4 pb-4 grid grid-cols-2 gap-4" style={{ height: '220px', minHeight: '220px' }}>
-            {/* 5-min card */}
             <MarketPanel label="5 MIN" color="#3b82f6" markets={markets5m} />
-            {/* 15-min card */}
             <MarketPanel label="15 MIN" color="#8b5cf6" markets={markets15m} />
           </div>
         </div>
@@ -395,9 +400,12 @@ export default function Terminal() {
   );
 }
 
-// ─── Market Panel (inline helper, not a separate file) ───────────────────────
+// ─── Market Panel ────────────────────────────────────────────────────────────
 function MarketPanel({ label, color, markets }: { label: string; color: string; markets: Market[] }) {
-  const market = markets[0]; // show the most relevant one
+  // Show up to 2 markets
+  const market = markets.length > 0 ? markets[0] : null;
+  const hasMultiple = markets.length > 1;
+
   return (
     <div className="rounded-xl p-4 flex flex-col" style={{ background: 'rgba(10,10,25,0.7)', border: '1px solid rgba(255,255,255,0.06)' }}>
       <div className="flex items-center justify-between mb-3">
@@ -406,8 +414,11 @@ function MarketPanel({ label, color, markets }: { label: string; color: string; 
             {label}
           </span>
           <span className="text-[10px] text-gray-600">BTC Up/Down</span>
+          {hasMultiple && (
+            <span className="text-[10px] text-gray-600 ml-1">+{markets.length - 1} more</span>
+          )}
         </div>
-        {market?.arb.profitable && (
+        {market?.arb?.profitable && (
           <span className="text-[10px] font-bold text-[#00ff88] px-2 py-0.5 rounded" style={{ background: 'rgba(0,255,136,0.1)', border: '1px solid rgba(0,255,136,0.2)' }}>
             ARB +{market.arb.spread.toFixed(2)}%
           </span>
@@ -416,7 +427,10 @@ function MarketPanel({ label, color, markets }: { label: string; color: string; 
 
       {!market ? (
         <div className="flex-1 flex items-center justify-center">
-          <p className="text-xs text-gray-600">No active markets</p>
+          <div className="text-center">
+            <p className="text-xs text-gray-600">Scanning for markets...</p>
+            <p className="text-[10px] text-gray-700 mt-1">Next scan in ~90s</p>
+          </div>
         </div>
       ) : (
         <MarketContent market={market} />
@@ -472,7 +486,7 @@ function MarketContent({ market }: { market: Market }) {
       </div>
 
       {/* Arb spread indicator */}
-      {market.arb.cost > 0 && (
+      {market.arb && market.arb.cost > 0 && (
         <div className="mt-2 pt-2 border-t border-white/[0.04] flex items-center justify-between">
           <span className="text-[10px] text-gray-600">Combined Cost</span>
           <span className={`text-xs font-bold tabular-nums ${market.arb.cost < 1 ? 'text-[#00ff88]' : 'text-[#ff4757]'}`}>

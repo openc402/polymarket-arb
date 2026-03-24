@@ -1,0 +1,21 @@
+{
+  "balance": 10000,
+  "totalPnl": 0,
+  "trades": [],
+  "openPositions": [],
+  "closedPositions": [],
+  "portfolioHistory": [
+    {
+      "time": 1774375264352,
+      "value": 10000
+    },
+    {
+      "time": 1774375459204,
+      "value": 10000
+    },
+    {
+      "time": 1774375683917,
+      "value": 10000
+    }
+  ]
+}
