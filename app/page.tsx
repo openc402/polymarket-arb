@@ -59,6 +59,30 @@ interface PricePoint {
   timestamp: number;
 }
 
+interface SnipeBet {
+  slug: string;
+  direction: string;
+  size: number;
+  entryPrice: number;
+  deltaPct: string;
+  timeBeforeEnd: number;
+  entryTime: number;
+  won?: boolean;
+  pnl?: string;
+  actualOutcome?: string;
+}
+
+interface SnipeState {
+  balance: number;
+  totalPnl: number;
+  trades: number;
+  wins: number;
+  losses: number;
+  winrate: string;
+  openBets: SnipeBet[];
+  recentClosed: SnipeBet[];
+}
+
 interface WSMessage {
   type: 'update';
   data: {
@@ -66,6 +90,7 @@ interface WSMessage {
     btcHistory: { time: number; price: number }[];
     markets: Market[];
     portfolio: PortfolioState;
+    snipe?: SnipeState;
   };
 }
 
@@ -113,6 +138,7 @@ function ChartTooltip({ active, payload }: any) {
 // ─── Main Terminal ───────────────────────────────────────────────────────────
 export default function Terminal() {
   const [portfolio, setPortfolio] = useState<PortfolioState | null>(null);
+  const [snipe, setSnipe] = useState<SnipeState | null>(null);
   const [markets, setMarkets] = useState<Market[]>([]);
   const [btcPrice, setBtcPrice] = useState<number | null>(null);
   const [prevBtcPrice, setPrevBtcPrice] = useState<number | null>(null);
@@ -125,6 +151,7 @@ export default function Terminal() {
   const handleMessage = useCallback((msg: WSMessage) => {
     try {
       if (msg.data.portfolio) setPortfolio(msg.data.portfolio);
+      if (msg.data.snipe) setSnipe(msg.data.snipe);
       if (msg.data.markets) setMarkets(msg.data.markets);
       if (msg.data.btcPrice != null) {
         setBtcPrice(prev => {
@@ -396,9 +423,9 @@ export default function Terminal() {
           </div>
 
           {/* ── RECENT CLOSED TRADES ── */}
-          <div className="p-4 flex-1 min-h-0">
+          <div className="p-4 border-b border-white/[0.06]">
             <h3 className="text-[10px] font-bold uppercase tracking-widest text-gray-500 mb-3">Recent Trades</h3>
-            <div className="space-y-1 overflow-y-auto" style={{ maxHeight: 'calc(100% - 24px)' }}>
+            <div className="space-y-1 overflow-y-auto" style={{ maxHeight: '180px' }}>
               {(!portfolio || portfolio.recentTrades.length === 0) ? (
                 <p className="text-xs text-gray-600 italic">No recent trades</p>
               ) : (
@@ -426,6 +453,86 @@ export default function Terminal() {
                 })
               )}
             </div>
+          </div>
+
+          {/* ── SNIPE STRATEGY ── */}
+          <div className="p-4 flex-1 min-h-0">
+            <h3 className="text-[10px] font-bold uppercase tracking-widest mb-3" style={{ color: '#ff9f43' }}>
+              Snipe Strategy
+              <span className="ml-2 text-[10px] font-normal text-gray-600">Last 60s</span>
+            </h3>
+            {snipe ? (
+              <>
+                <div className="space-y-2 mb-3">
+                  <div className="flex justify-between items-baseline">
+                    <span className="text-xs text-gray-500">Balance</span>
+                    <span className="text-sm font-bold text-white tabular-nums">${snipe.balance.toFixed(2)}</span>
+                  </div>
+                  <div className="flex justify-between items-baseline">
+                    <span className="text-xs text-gray-500">P&L</span>
+                    <span className={`text-sm font-bold tabular-nums ${snipe.totalPnl >= 0 ? 'text-[#00ff88]' : 'text-[#ff4757]'}`}>
+                      {snipe.totalPnl >= 0 ? '+' : ''}{snipe.totalPnl.toFixed(2)}
+                    </span>
+                  </div>
+                  <div className="flex justify-between items-baseline">
+                    <span className="text-xs text-gray-500">Win Rate</span>
+                    <span className="text-xs font-semibold text-white tabular-nums">
+                      {snipe.winrate}% ({snipe.wins}W/{snipe.losses}L)
+                    </span>
+                  </div>
+                  <div className="flex justify-between items-baseline">
+                    <span className="text-xs text-gray-500">Trades</span>
+                    <span className="text-xs font-semibold text-white tabular-nums">{snipe.trades}</span>
+                  </div>
+                </div>
+                {/* Open snipe bets */}
+                {snipe.openBets.length > 0 && (
+                  <div className="mb-2">
+                    <p className="text-[10px] text-gray-600 uppercase tracking-wider mb-1">Open</p>
+                    {snipe.openBets.map((b, i) => (
+                      <div key={i} className="flex items-center justify-between py-1.5 px-2 rounded-lg mb-1" style={{ background: 'rgba(255,159,67,0.08)', border: '1px solid rgba(255,159,67,0.15)' }}>
+                        <div>
+                          <span className="text-xs font-semibold" style={{ color: '#ff9f43' }}>{b.direction}</span>
+                          <span className="text-[10px] text-gray-500 ml-1">@ {(b.entryPrice * 100).toFixed(0)}c</span>
+                        </div>
+                        <span className="text-[10px] text-gray-500 tabular-nums">{(b.timeBeforeEnd / 1000).toFixed(0)}s | {b.deltaPct}%</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                {/* Recent closed snipe trades */}
+                <div className="space-y-1 overflow-y-auto" style={{ maxHeight: '150px' }}>
+                  {snipe.recentClosed.length === 0 ? (
+                    <p className="text-xs text-gray-600 italic">No snipe trades yet</p>
+                  ) : (
+                    snipe.recentClosed.slice().reverse().slice(0, 8).map((t, i) => {
+                      const pnl = parseFloat(t.pnl ?? '0');
+                      const isProfit = pnl >= 0;
+                      return (
+                        <div key={i} className="flex items-center justify-between py-1.5 px-2 rounded-lg hover:bg-white/[0.02] transition-colors">
+                          <div className="flex items-center gap-2">
+                            <div className={`w-1.5 h-1.5 rounded-full ${isProfit ? 'bg-[#00ff88]' : 'bg-[#ff4757]'}`} />
+                            <div>
+                              <p className="text-[10px] text-gray-400">
+                                {t.direction} @ {(t.entryPrice * 100).toFixed(0)}c
+                              </p>
+                              <p className="text-[9px] text-gray-600 tabular-nums">
+                                {(t.timeBeforeEnd / 1000).toFixed(0)}s before | delta {t.deltaPct}%
+                              </p>
+                            </div>
+                          </div>
+                          <span className={`text-xs font-bold tabular-nums ${isProfit ? 'text-[#00ff88]' : 'text-[#ff4757]'}`}>
+                            {isProfit ? '+' : ''}{pnl.toFixed(2)}
+                          </span>
+                        </div>
+                      );
+                    })
+                  )}
+                </div>
+              </>
+            ) : (
+              <p className="text-xs text-gray-600 italic">Waiting for data...</p>
+            )}
           </div>
         </div>
       </div>

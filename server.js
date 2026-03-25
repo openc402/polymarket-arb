@@ -19,6 +19,29 @@ const LIVE_PRICE_INTERVAL = 1000;     // 1s between live last-trade-price fetche
 const GAMMA_RATE_LIMIT = 5000;        // 5s between gamma requests
 const CLOB_RATE_LIMIT = 2000;         // 2s between clob requests
 const BTC_HISTORY_MAX = 300;          // ~5 min of per-second data
+const HISTORY_FILE = path.join(__dirname, 'data', 'market-history.jsonl');
+const BTC_SNAPSHOTS_FILE = path.join(__dirname, 'data', 'btc-snapshots.jsonl');
+const PAPER_TRADES_FILE = path.join(__dirname, 'data', 'paper-trades.jsonl');
+const MOMENTUM_TRADES_FILE = path.join(__dirname, 'data', 'momentum-trades.jsonl');
+const SNIPE_TRADES_FILE = path.join(__dirname, 'data', 'snipe-trades.jsonl');
+
+// ─── Late-Snipe Paper Trading Config ─────────────────────────────────────────
+const SNIPE_MIN_TIME = 10000;       // 10s before end (minimum — too close is risky)
+const SNIPE_MAX_TIME = 60000;       // 60s before end (maximum — entry window)
+const SNIPE_BET_SIZE = 50;          // $50 per snipe bet
+const SNIPE_MIN_ENTRY = 0.55;       // lower threshold since we're more confident near end
+const SNIPE_MIN_DELTA_PCT = 0.03;   // BTC must be at least 0.03% away from reference price
+
+// ─── Momentum Paper Trading Config ───────────────────────────────────────────
+const MOMENTUM_THRESHOLD = 0.05;      // minimum momentum % to trigger a bet
+const MOMENTUM_TIGHT = 0.10;          // tight momentum for larger bets
+const MOMENTUM_BET_STANDARD = 50;     // standard bet size
+const MOMENTUM_BET_TIGHT = 100;       // bet size for tight momentum signals
+const MOMENTUM_WINDOW_MS = 120000;    // 2 minutes of BTC history for momentum calc
+const MOMENTUM_MIN_TIME_LEFT = 30000; // don't bet if <30s left
+const MOMENTUM_MAX_TIME_LEFT = 240000; // don't bet if >4min left (want to bet mid-market)
+const MOMENTUM_ONLY_5M = true;        // only trade 5m markets (15m showed weak signal)
+const MOMENTUM_MIN_ENTRY_PRICE = 0.60; // skip trades with entry < 0.60 (35.7% WR vs 75%+ above)
 
 // ─── State ────────────────────────────────────────────────────────────────────
 let state = loadState();
@@ -27,6 +50,30 @@ let btcHistory = [];       // {time: epoch_ms, price: number}
 let activeMarkets = [];    // enriched market objects
 let lastGammaReq = 0;
 let lastClobReq = 0;
+
+// ─── Momentum Paper Trading State ────────────────────────────────────────────
+let momentumPortfolio = {
+  balance: 10000,
+  totalPnl: 0,
+  trades: 0,
+  wins: 0,
+  losses: 0,
+  openBets: [],       // { slug, direction, size, entryTime, entryPrice, referencePrice, endDate, momentum }
+  closedBets: [],     // resolved bets with pnl
+};
+const momentumBetted = new Set(); // slugs we've already bet on (avoid double-betting)
+
+// ─── Late-Snipe Paper Trading State ──────────────────────────────────────────
+let snipePortfolio = {
+  balance: 10000,
+  totalPnl: 0,
+  trades: 0,
+  wins: 0,
+  losses: 0,
+  openBets: [],     // { slug, direction, size, entryTime, entryPrice, referencePrice, endDate, deltaPct, timeBeforeEnd }
+  closedBets: [],   // resolved bets with pnl
+};
+const snipeBetted = new Set(); // slugs we've already sniped (avoid double-betting)
 
 function defaultState() {
   return {
@@ -48,6 +95,89 @@ function loadState() {
   return defaultState();
 }
 
+// ─── Historical Data Collection ───────────────────────────────────────────────
+const trackedMarkets = new Map(); // slug -> { openPrice, openTime, upPriceAtOpen, downPriceAtOpen }
+
+function appendJsonl(file, obj) {
+  try {
+    const dir = path.dirname(file);
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    fs.appendFileSync(file, JSON.stringify(obj) + '\n');
+  } catch (e) { console.error('[HISTORY] Write failed:', e.message); }
+}
+
+function snapshotBtcPrice() {
+  if (!btcPrice) return;
+  const now = Date.now();
+  // Log every 30s
+  if (!snapshotBtcPrice._last || now - snapshotBtcPrice._last >= 30000) {
+    snapshotBtcPrice._last = now;
+    appendJsonl(BTC_SNAPSHOTS_FILE, { time: now, price: btcPrice });
+  }
+}
+
+function trackMarketOpen(market) {
+  if (!market.slug || trackedMarkets.has(market.slug)) return;
+  trackedMarkets.set(market.slug, {
+    slug: market.slug,
+    type: market.type,
+    question: market.question,
+    openTime: Date.now(),
+    openBtcPrice: btcPrice,
+    referencePrice: market.referencePrice,
+    upPriceAtOpen: market.upLastPrice || market.outcomePrices?.[0] || null,
+    downPriceAtOpen: market.downLastPrice || market.outcomePrices?.[1] || null,
+    endDate: market.endDate,
+  });
+  console.log(`[HISTORY] Tracking market open: ${market.slug} | BTC: $${btcPrice}`);
+}
+
+function checkMarketResolutions() {
+  const now = Date.now();
+  for (const [slug, tracked] of trackedMarkets) {
+    const endTime = new Date(tracked.endDate).getTime();
+    // Check 90s after end (give time for resolution)
+    if (now > endTime + 90000) {
+      const closeBtcPrice = btcPrice;
+      const btcChange = tracked.openBtcPrice && closeBtcPrice
+        ? ((closeBtcPrice - tracked.openBtcPrice) / tracked.openBtcPrice) * 100
+        : null;
+      const refChange = tracked.referencePrice && closeBtcPrice
+        ? ((closeBtcPrice - tracked.referencePrice) / tracked.referencePrice) * 100
+        : null;
+      const outcome = refChange !== null ? (refChange >= 0 ? 'Up' : 'Down') : 'unknown';
+
+      // Get BTC price history around market period
+      const marketDuration = endTime - new Date(tracked.openTime).getTime();
+      const relevantHistory = btcHistory.filter(h => h.time >= tracked.openTime - 60000 && h.time <= endTime + 60000);
+      const momentum2m = relevantHistory.length > 2
+        ? ((relevantHistory[relevantHistory.length - 1].price - relevantHistory[Math.max(0, relevantHistory.length - 121)].price) / relevantHistory[Math.max(0, relevantHistory.length - 121)].price) * 100
+        : null;
+
+      const record = {
+        slug,
+        type: tracked.type,
+        openTime: tracked.openTime,
+        endTime,
+        openBtcPrice: tracked.openBtcPrice,
+        closeBtcPrice,
+        referencePrice: tracked.referencePrice,
+        btcChangePct: btcChange,
+        refChangePct: refChange,
+        outcome,
+        momentum2mPct: momentum2m,
+        upPriceAtOpen: tracked.upPriceAtOpen,
+        downPriceAtOpen: tracked.downPriceAtOpen,
+      };
+
+      appendJsonl(HISTORY_FILE, record);
+      console.log(`[HISTORY] Market resolved: ${slug} → ${outcome} | BTC Δ: ${btcChange?.toFixed(4)}% | Ref Δ: ${refChange?.toFixed(4)}%`);
+      trackedMarkets.delete(slug);
+    }
+  }
+}
+
+// ─── State persistence ────────────────────────────────────────────────────────
 function saveState() {
   try {
     const dir = path.dirname(DATA_FILE);
@@ -427,6 +557,283 @@ function resolveExpiredPositions() {
   }
 }
 
+// ─── Momentum Paper Trading Logic ─────────────────────────────────────────────
+function calcMomentum() {
+  if (btcHistory.length < 10) return null;
+  const now = Date.now();
+  const windowStart = now - MOMENTUM_WINDOW_MS;
+  const relevant = btcHistory.filter(h => h.time >= windowStart);
+  if (relevant.length < 5) return null;
+  const oldest = relevant[0].price;
+  const newest = relevant[relevant.length - 1].price;
+  return ((newest - oldest) / oldest) * 100;
+}
+
+function checkMomentumBets() {
+  const momentum = calcMomentum();
+  if (momentum === null) return;
+
+  const absMomentum = Math.abs(momentum);
+  if (absMomentum < MOMENTUM_THRESHOLD) return;
+
+  const direction = momentum > 0 ? 'Up' : 'Down';
+  const isTight = absMomentum >= MOMENTUM_TIGHT;
+  const betSize = isTight ? MOMENTUM_BET_TIGHT : MOMENTUM_BET_STANDARD;
+
+  for (const market of activeMarkets) {
+    if (MOMENTUM_ONLY_5M && market.type !== '5m') continue;
+    if (momentumBetted.has(market.slug)) continue;
+
+    const endTime = new Date(market.endDate).getTime();
+    const timeLeft = endTime - Date.now();
+    if (timeLeft < MOMENTUM_MIN_TIME_LEFT || timeLeft > MOMENTUM_MAX_TIME_LEFT) continue;
+    if (!market.referencePrice) continue;
+
+    // Check we have enough balance
+    if (momentumPortfolio.balance < betSize) continue;
+
+    // Get entry price (what we'd pay for the outcome token)
+    const entryPrice = direction === 'Up'
+      ? (market.upLastPrice || market.outcomePrices?.[0] || 0.5)
+      : (market.downLastPrice || market.outcomePrices?.[1] || 0.5);
+
+    // Skip low-entry trades (data shows < 0.60 has 35.7% WR = losing money)
+    if (entryPrice < MOMENTUM_MIN_ENTRY_PRICE) {
+      console.log(`[MOMENTUM] SKIP ${direction} on ${market.slug} | Entry ${entryPrice.toFixed(3)} < ${MOMENTUM_MIN_ENTRY_PRICE} min threshold`);
+      continue;
+    }
+
+    // Place the virtual bet
+    const bet = {
+      slug: market.slug,
+      type: market.type,
+      direction,
+      size: betSize,
+      entryTime: Date.now(),
+      entryPrice,
+      referencePrice: market.referencePrice,
+      endDate: market.endDate,
+      btcPriceAtEntry: btcPrice,
+      momentum: momentum.toFixed(4),
+      signal: isTight ? 'tight' : 'strong',
+    };
+
+    momentumPortfolio.balance -= betSize * entryPrice;
+    momentumPortfolio.openBets.push(bet);
+    momentumPortfolio.trades++;
+    momentumBetted.add(market.slug);
+
+    console.log(`[MOMENTUM] BET ${direction} on ${market.slug} | Size: $${betSize} @ ${entryPrice.toFixed(3)} | Momentum: ${momentum.toFixed(4)}% (${isTight ? 'TIGHT' : 'strong'}) | Balance: $${momentumPortfolio.balance.toFixed(2)}`);
+    appendJsonl(MOMENTUM_TRADES_FILE, { ...bet, action: 'OPEN' });
+  }
+}
+
+function resolveMomentumBets() {
+  const now = Date.now();
+  momentumPortfolio.openBets = momentumPortfolio.openBets.filter(bet => {
+    const endTime = new Date(bet.endDate).getTime();
+    if (now <= endTime + 90000) return true; // not resolved yet
+
+    // Determine actual outcome
+    const closeBtcPrice = btcPrice;
+    const refChange = bet.referencePrice && closeBtcPrice
+      ? ((closeBtcPrice - bet.referencePrice) / bet.referencePrice) * 100
+      : null;
+
+    if (refChange === null) {
+      // Can't determine outcome, refund
+      momentumPortfolio.balance += bet.size * bet.entryPrice;
+      console.log(`[MOMENTUM] REFUND ${bet.slug} — no reference data`);
+      return false;
+    }
+
+    const actualOutcome = refChange >= 0 ? 'Up' : 'Down';
+    const won = actualOutcome === bet.direction;
+
+    let pnl;
+    if (won) {
+      // Payout = size (bet $50 at 0.5 → get 100 shares → payout $100 if win, but we spent $25)
+      // Actually: we buy `shares = betSize` worth of outcome tokens at entryPrice
+      // Shares bought = betSize (dollar amount) / no, cost = betSize * entryPrice
+      // If win: payout = betSize (each share pays $1, we have betSize*entryPrice cost for betSize*entryPrice/entryPrice... 
+      // Simpler: cost = betSize * entryPrice. If win, payout = betSize. pnl = betSize - cost.
+      const cost = bet.size * bet.entryPrice;
+      const payout = bet.size; // $1 per share, we bought bet.size shares... no.
+      // Let me reconsider: we spend $betSize to buy shares at entryPrice.
+      // Shares = betSize / entryPrice. If win, each share pays $1. Payout = betSize / entryPrice.
+      // Wait no — on Polymarket, you spend e.g. 50¢ per share. If you win, each share pays $1.
+      // So: cost = $betSize total. Shares = betSize / entryPrice. Payout = shares * $1 = betSize / entryPrice.
+      const shares = bet.size / bet.entryPrice;
+      pnl = shares - bet.size; // payout minus what we originally "spent" ($betSize)
+      momentumPortfolio.balance += shares; // get payout
+      momentumPortfolio.wins++;
+    } else {
+      // Lose everything
+      pnl = -(bet.size * bet.entryPrice); // already deducted
+      // Actually we already deducted betSize * entryPrice from balance. Loss = that amount.
+      pnl = -(bet.size * bet.entryPrice);
+      momentumPortfolio.losses++;
+    }
+
+    momentumPortfolio.totalPnl += pnl;
+
+    const result = {
+      ...bet,
+      action: 'CLOSE',
+      closeBtcPrice,
+      refChangePct: refChange.toFixed(4),
+      actualOutcome,
+      won,
+      pnl: pnl.toFixed(2),
+      balanceAfter: momentumPortfolio.balance.toFixed(2),
+      winrate: ((momentumPortfolio.wins / (momentumPortfolio.wins + momentumPortfolio.losses)) * 100).toFixed(1),
+    };
+
+    momentumPortfolio.closedBets.push(result);
+    appendJsonl(MOMENTUM_TRADES_FILE, result);
+
+    const emoji = won ? '✅' : '❌';
+    console.log(`[MOMENTUM] ${emoji} ${bet.direction} on ${bet.slug} → ${actualOutcome} | PnL: $${pnl.toFixed(2)} | Total PnL: $${momentumPortfolio.totalPnl.toFixed(2)} | Winrate: ${result.winrate}% (${momentumPortfolio.wins}W/${momentumPortfolio.losses}L) | Balance: $${momentumPortfolio.balance.toFixed(2)}`);
+    return false;
+  });
+}
+
+// ─── Late-Snipe Paper Trading Logic ──────────────────────────────────────────
+function lateSnipeTrade() {
+  if (!btcPrice) return;
+
+  for (const market of activeMarkets) {
+    if (market.type !== '5m') continue;
+    if (snipeBetted.has(market.slug)) continue;
+    if (!market.referencePrice) continue;
+
+    const endTime = new Date(market.endDate).getTime();
+    const timeLeft = endTime - Date.now();
+    if (timeLeft < SNIPE_MIN_TIME || timeLeft > SNIPE_MAX_TIME) continue;
+
+    // Calculate delta: how far BTC has moved from reference price
+    const delta = ((btcPrice - market.referencePrice) / market.referencePrice) * 100;
+    const absDelta = Math.abs(delta);
+    if (absDelta < SNIPE_MIN_DELTA_PCT) continue;
+
+    const direction = delta > 0 ? 'Up' : 'Down';
+
+    // Get entry price from last-trade-price
+    const entryPrice = direction === 'Up'
+      ? (market.upLastPrice || market.outcomePrices?.[0] || 0.5)
+      : (market.downLastPrice || market.outcomePrices?.[1] || 0.5);
+
+    if (entryPrice < SNIPE_MIN_ENTRY) {
+      console.log(`[SNIPE] SKIP ${direction} on ${market.slug} | Entry ${entryPrice.toFixed(3)} < ${SNIPE_MIN_ENTRY} min threshold`);
+      continue;
+    }
+
+    if (snipePortfolio.balance < SNIPE_BET_SIZE * entryPrice) continue;
+
+    const bet = {
+      slug: market.slug,
+      type: market.type,
+      direction,
+      size: SNIPE_BET_SIZE,
+      entryTime: Date.now(),
+      entryPrice,
+      referencePrice: market.referencePrice,
+      endDate: market.endDate,
+      btcPriceAtEntry: btcPrice,
+      deltaPct: delta.toFixed(4),
+      timeBeforeEnd: timeLeft,
+    };
+
+    snipePortfolio.balance -= SNIPE_BET_SIZE * entryPrice;
+    snipePortfolio.openBets.push(bet);
+    snipePortfolio.trades++;
+    snipeBetted.add(market.slug);
+
+    console.log(`[SNIPE] BET ${direction} on ${market.slug} | Size: $${SNIPE_BET_SIZE} @ ${entryPrice.toFixed(3)} | Delta: ${delta.toFixed(4)}% | TimeLeft: ${(timeLeft/1000).toFixed(0)}s | Balance: $${snipePortfolio.balance.toFixed(2)}`);
+    appendJsonl(SNIPE_TRADES_FILE, { ...bet, action: 'OPEN' });
+  }
+}
+
+function resolveSnipeBets() {
+  const now = Date.now();
+  snipePortfolio.openBets = snipePortfolio.openBets.filter(bet => {
+    const endTime = new Date(bet.endDate).getTime();
+    if (now <= endTime + 90000) return true; // not resolved yet
+
+    const closeBtcPrice = btcPrice;
+    const refChange = bet.referencePrice && closeBtcPrice
+      ? ((closeBtcPrice - bet.referencePrice) / bet.referencePrice) * 100
+      : null;
+
+    if (refChange === null) {
+      snipePortfolio.balance += bet.size * bet.entryPrice;
+      console.log(`[SNIPE] REFUND ${bet.slug} — no reference data`);
+      return false;
+    }
+
+    const actualOutcome = refChange >= 0 ? 'Up' : 'Down';
+    const won = actualOutcome === bet.direction;
+
+    let pnl;
+    if (won) {
+      const shares = bet.size / bet.entryPrice;
+      pnl = shares - bet.size;
+      snipePortfolio.balance += shares;
+      snipePortfolio.wins++;
+    } else {
+      pnl = -(bet.size * bet.entryPrice);
+      snipePortfolio.losses++;
+    }
+
+    snipePortfolio.totalPnl += pnl;
+
+    const result = {
+      ...bet,
+      action: 'CLOSE',
+      closeBtcPrice,
+      refChangePct: refChange.toFixed(4),
+      actualOutcome,
+      won,
+      pnl: pnl.toFixed(2),
+      balanceAfter: snipePortfolio.balance.toFixed(2),
+      winrate: ((snipePortfolio.wins / (snipePortfolio.wins + snipePortfolio.losses)) * 100).toFixed(1),
+    };
+
+    snipePortfolio.closedBets.push(result);
+    appendJsonl(SNIPE_TRADES_FILE, result);
+
+    const emoji = won ? '✅' : '❌';
+    console.log(`[SNIPE] ${emoji} ${bet.direction} on ${bet.slug} → ${actualOutcome} | PnL: $${pnl.toFixed(2)} | Total PnL: $${snipePortfolio.totalPnl.toFixed(2)} | Winrate: ${result.winrate}% (${snipePortfolio.wins}W/${snipePortfolio.losses}L) | Balance: $${snipePortfolio.balance.toFixed(2)}`);
+    return false;
+  });
+}
+
+// ─── Snipe Loop (every 5s — needs to be fast to catch the window) ────────────
+async function snipeTradingLoop() {
+  while (true) {
+    try {
+      lateSnipeTrade();
+      resolveSnipeBets();
+    } catch (e) {
+      console.error('[SNIPE] Error:', e.message);
+    }
+    await sleep(5000);
+  }
+}
+
+// ─── Momentum Loop (every 15s) ───────────────────────────────────────────────
+async function momentumTradingLoop() {
+  while (true) {
+    try {
+      checkMomentumBets();
+      resolveMomentumBets();
+    } catch (e) {
+      console.error('[MOMENTUM] Error:', e.message);
+    }
+    await sleep(15000);
+  }
+}
+
 // ─── Market Discovery Loop (every 90s) ───────────────────────────────────────
 async function marketDiscoveryLoop() {
   while (true) {
@@ -442,6 +849,8 @@ async function marketDiscoveryLoop() {
       }
 
       activeMarkets = discovered;
+      // Track market opens for historical data
+      discovered.forEach(m => trackMarketOpen(m));
       console.log(`[DISCOVERY] Found ${discovered.length} active markets (${discovered.filter(m=>m.type==='5m').length} x 5m, ${discovered.filter(m=>m.type==='15m').length} x 15m)`);
     } catch (e) {
       console.error('[DISCOVERY] Error:', e.message);
@@ -493,6 +902,9 @@ async function orderbookLoop() {
       }
 
       resolveExpiredPositions();
+      // Check for market resolutions and log historical data
+      checkMarketResolutions();
+      snapshotBtcPrice();
     } catch (e) {
       console.error('[ORDERBOOK] Error:', e.message);
     }
@@ -541,6 +953,31 @@ function buildPayload() {
         recentTrades: state.trades.slice(-20),
         portfolioHistory: state.portfolioHistory.slice(-100),
       },
+      momentum: {
+        balance: momentumPortfolio.balance,
+        totalPnl: momentumPortfolio.totalPnl,
+        trades: momentumPortfolio.trades,
+        wins: momentumPortfolio.wins,
+        losses: momentumPortfolio.losses,
+        winrate: momentumPortfolio.wins + momentumPortfolio.losses > 0
+          ? ((momentumPortfolio.wins / (momentumPortfolio.wins + momentumPortfolio.losses)) * 100).toFixed(1)
+          : 'N/A',
+        openBets: momentumPortfolio.openBets,
+        recentClosed: momentumPortfolio.closedBets.slice(-20),
+        currentMomentum: calcMomentum()?.toFixed(4) || null,
+      },
+      snipe: {
+        balance: snipePortfolio.balance,
+        totalPnl: snipePortfolio.totalPnl,
+        trades: snipePortfolio.trades,
+        wins: snipePortfolio.wins,
+        losses: snipePortfolio.losses,
+        winrate: snipePortfolio.wins + snipePortfolio.losses > 0
+          ? ((snipePortfolio.wins / (snipePortfolio.wins + snipePortfolio.losses)) * 100).toFixed(1)
+          : 'N/A',
+        openBets: snipePortfolio.openBets,
+        recentClosed: snipePortfolio.closedBets.slice(-20),
+      },
     },
   });
 }
@@ -578,6 +1015,30 @@ app.get('/api/health', (req, res) => {
 
 app.get('/api/state', (req, res) => {
   res.json(state);
+});
+
+app.get('/api/history', (req, res) => {
+  try {
+    if (!fs.existsSync(HISTORY_FILE)) return res.json({ records: [], count: 0 });
+    const lines = fs.readFileSync(HISTORY_FILE, 'utf8').trim().split('\n').filter(Boolean);
+    const records = lines.map(l => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean);
+    res.json({ records, count: records.length, tracking: Array.from(trackedMarkets.keys()) });
+  } catch (e) { res.json({ error: e.message }); }
+});
+
+app.get('/api/momentum', (req, res) => {
+  res.json({
+    ...momentumPortfolio,
+    currentMomentum: calcMomentum(),
+    closedBets: momentumPortfolio.closedBets.slice(-50),
+  });
+});
+
+app.get('/api/snipe', (req, res) => {
+  res.json({
+    ...snipePortfolio,
+    closedBets: snipePortfolio.closedBets.slice(-50),
+  });
 });
 
 app.post('/api/reset', express.json(), (req, res) => {
@@ -631,4 +1092,8 @@ server.listen(PORT, '0.0.0.0', () => {
   setTimeout(() => livePriceLoop(), 8000);
   setTimeout(() => secondaryPriceLoop(), 10000);
   setTimeout(() => orderbookLoop(), 15000);
+  setTimeout(() => momentumTradingLoop(), 20000);
+  setTimeout(() => snipeTradingLoop(), 22000);
+  console.log('[MOMENTUM] Paper trading active — 5m markets, threshold ≥0.05%');
+  console.log('[SNIPE] Late-snipe paper trading active — 5m markets, last 10-60s, delta ≥0.03%');
 });
