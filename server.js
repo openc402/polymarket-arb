@@ -26,11 +26,11 @@ const MOMENTUM_TRADES_FILE = path.join(__dirname, 'data', 'momentum-trades.jsonl
 const SNIPE_TRADES_FILE = path.join(__dirname, 'data', 'snipe-trades.jsonl');
 
 // ─── Late-Snipe Paper Trading Config ─────────────────────────────────────────
-const SNIPE_MIN_TIME = 10000;       // 10s before end (minimum — too close is risky)
-const SNIPE_MAX_TIME = 60000;       // 60s before end (maximum — entry window)
+const SNIPE_MIN_TIME = 10000;       // 10s before end (minimum - too close is risky)
+const SNIPE_MAX_TIME = 60000;       // 60s before end (maximum - last minute only)
 const SNIPE_BET_SIZE = 50;          // $50 per snipe bet
-const SNIPE_MIN_ENTRY = 0.55;       // lower threshold since we're more confident near end
-const SNIPE_MIN_DELTA_PCT = 0.03;   // BTC must be at least 0.03% away from reference price
+const SNIPE_MIN_ENTRY = 0.80;       // STRONG signal only - entry must be >= 80¢
+const SNIPE_MIN_DELTA_PCT = 0.05;   // BTC must be at least 0.05% away from reference price (strong move)
 
 // ─── Momentum Paper Trading Config ───────────────────────────────────────────
 const MOMENTUM_THRESHOLD = 0.05;      // minimum momentum % to trigger a bet
@@ -388,7 +388,7 @@ async function fetchLivePrices(market) {
   const downToken = market.clobTokenIds[1];
   if (!upToken || !downToken || upToken === downToken) return;
 
-  // Fetch BOTH tokens' last-trade-price in PARALLEL — no rate limit delay
+  // Fetch BOTH tokens' last-trade-price in PARALLEL - no rate limit delay
   const [upLastRes, downLastRes] = await Promise.all([
     fetchLastTradePrice(upToken),
     fetchLastTradePrice(downToken),
@@ -402,7 +402,7 @@ async function fetchLivePrices(market) {
   market.livePriceTime = Date.now();
 }
 
-// ─── Secondary price data (midpoint, buy/sell) — fetched less frequently ─────
+// ─── Secondary price data (midpoint, buy/sell) - fetched less frequently ─────
 async function fetchSecondaryPrices(market) {
   if (!market.clobTokenIds || market.clobTokenIds.length < 2) return;
   const upToken = market.clobTokenIds[0];
@@ -431,7 +431,7 @@ async function fetchSecondaryPrices(market) {
   market.downSell = downSellVal && downSellVal > 0 ? downSellVal : null;
 }
 
-// ─── Live Price Loop (every 1s — last-trade-price only, parallel, no rate limit)
+// ─── Live Price Loop (every 1s - last-trade-price only, parallel, no rate limit)
 async function livePriceLoop() {
   while (true) {
     try {
@@ -447,7 +447,7 @@ async function livePriceLoop() {
   }
 }
 
-// ─── Secondary Price Loop (every 10s — midpoint, buy/sell for spread info) ───
+// ─── Secondary Price Loop (every 10s - midpoint, buy/sell for spread info) ───
 async function secondaryPriceLoop() {
   while (true) {
     try {
@@ -643,7 +643,7 @@ function resolveMomentumBets() {
     if (refChange === null) {
       // Can't determine outcome, refund
       momentumPortfolio.balance += bet.size * bet.entryPrice;
-      console.log(`[MOMENTUM] REFUND ${bet.slug} — no reference data`);
+      console.log(`[MOMENTUM] REFUND ${bet.slug} - no reference data`);
       return false;
     }
 
@@ -655,13 +655,13 @@ function resolveMomentumBets() {
       // Payout = size (bet $50 at 0.5 → get 100 shares → payout $100 if win, but we spent $25)
       // Actually: we buy `shares = betSize` worth of outcome tokens at entryPrice
       // Shares bought = betSize (dollar amount) / no, cost = betSize * entryPrice
-      // If win: payout = betSize (each share pays $1, we have betSize*entryPrice cost for betSize*entryPrice/entryPrice... 
+      // If win: payout = betSize (each share pays $1, we have betSize*entryPrice cost for betSize*entryPrice/entryPrice...
       // Simpler: cost = betSize * entryPrice. If win, payout = betSize. pnl = betSize - cost.
       const cost = bet.size * bet.entryPrice;
       const payout = bet.size; // $1 per share, we bought bet.size shares... no.
       // Let me reconsider: we spend $betSize to buy shares at entryPrice.
       // Shares = betSize / entryPrice. If win, each share pays $1. Payout = betSize / entryPrice.
-      // Wait no — on Polymarket, you spend e.g. 50¢ per share. If you win, each share pays $1.
+      // Wait no - on Polymarket, you spend e.g. 50¢ per share. If you win, each share pays $1.
       // So: cost = $betSize total. Shares = betSize / entryPrice. Payout = shares * $1 = betSize / entryPrice.
       const shares = bet.size / bet.entryPrice;
       pnl = shares - bet.size; // payout minus what we originally "spent" ($betSize)
@@ -767,7 +767,7 @@ function resolveSnipeBets() {
 
     if (refChange === null) {
       snipePortfolio.balance += bet.size * bet.entryPrice;
-      console.log(`[SNIPE] REFUND ${bet.slug} — no reference data`);
+      console.log(`[SNIPE] REFUND ${bet.slug} - no reference data`);
       return false;
     }
 
@@ -808,7 +808,7 @@ function resolveSnipeBets() {
   });
 }
 
-// ─── Snipe Loop (every 5s — needs to be fast to catch the window) ────────────
+// ─── Snipe Loop (every 5s - needs to be fast to catch the window) ────────────
 async function snipeTradingLoop() {
   while (true) {
     try {
@@ -1094,6 +1094,6 @@ server.listen(PORT, '0.0.0.0', () => {
   setTimeout(() => orderbookLoop(), 15000);
   setTimeout(() => momentumTradingLoop(), 20000);
   setTimeout(() => snipeTradingLoop(), 22000);
-  console.log('[MOMENTUM] Paper trading active — 5m markets, threshold ≥0.05%');
-  console.log('[SNIPE] Late-snipe paper trading active — 5m markets, last 10-60s, delta ≥0.03%');
+  console.log('[MOMENTUM] Paper trading active - 5m markets, threshold ≥0.05%');
+  console.log('[SNIPE] Late-snipe paper trading active - 5m markets, last 10-60s, delta ≥0.03%');
 });
