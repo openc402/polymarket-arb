@@ -15,10 +15,10 @@ const TRADE_SIZE = 50;
 
 const MARKET_SCAN_INTERVAL = 30000;   // 30s between market discovery (faster for 5min transitions)
 const ORDERBOOK_INTERVAL = 60000;     // 60s between orderbook refreshes (depth info only)
-const LIVE_PRICE_INTERVAL = 1000;     // 1s between live last-trade-price fetches (lightweight endpoint ~50ms)
+const POLYMARKET_WS_URL = 'wss://ws-live-data.polymarket.com/';
 const GAMMA_RATE_LIMIT = 5000;        // 5s between gamma requests
 const CLOB_RATE_LIMIT = 2000;         // 2s between clob requests
-const BTC_HISTORY_MAX = 300;          // ~5 min of per-second data
+const BTC_HISTORY_MAX = 600;          // ~10 min of per-second data (covers 90s resolution wait)
 const HISTORY_FILE = path.join(__dirname, 'data', 'market-history.jsonl');
 const BTC_SNAPSHOTS_FILE = path.join(__dirname, 'data', 'btc-snapshots.jsonl');
 const PAPER_TRADES_FILE = path.join(__dirname, 'data', 'paper-trades.jsonl');
@@ -26,11 +26,11 @@ const MOMENTUM_TRADES_FILE = path.join(__dirname, 'data', 'momentum-trades.jsonl
 const SNIPE_TRADES_FILE = path.join(__dirname, 'data', 'snipe-trades.jsonl');
 
 // ─── Late-Snipe Paper Trading Config ─────────────────────────────────────────
-const SNIPE_MIN_TIME = 10000;       // 10s before end (minimum - too close is risky)
-const SNIPE_MAX_TIME = 60000;       // 60s before end (maximum - last minute only)
-const SNIPE_BET_SIZE = 50;          // $50 per snipe bet
-const SNIPE_MIN_ENTRY = 0.80;       // STRONG signal only - entry must be >= 80¢
-const SNIPE_MIN_DELTA_PCT = 0.05;   // BTC must be at least 0.05% away from reference price (strong move)
+const SNIPE_MIN_TIME = 30000;       // same timing as momentum (30s min)
+const SNIPE_MAX_TIME = 240000;      // same timing as momentum (4min max)
+const SNIPE_BET_SIZE = 50;          // $50 per bet
+const SNIPE_MIN_ENTRY = 0.90;       // STRATEGY B: entry >= 90¢ only (vs momentum's 0.60)
+const SNIPE_MIN_DELTA_PCT = 0.03;   // same delta threshold as before
 
 // ─── Momentum Paper Trading Config ───────────────────────────────────────────
 const MOMENTUM_THRESHOLD = 0.05;      // minimum momentum % to trigger a bet
@@ -40,8 +40,8 @@ const MOMENTUM_BET_TIGHT = 100;       // bet size for tight momentum signals
 const MOMENTUM_WINDOW_MS = 120000;    // 2 minutes of BTC history for momentum calc
 const MOMENTUM_MIN_TIME_LEFT = 30000; // don't bet if <30s left
 const MOMENTUM_MAX_TIME_LEFT = 240000; // don't bet if >4min left (want to bet mid-market)
-const MOMENTUM_ONLY_5M = true;        // only trade 5m markets (15m showed weak signal)
-const MOMENTUM_MIN_ENTRY_PRICE = 0.60; // skip trades with entry < 0.60 (35.7% WR vs 75%+ above)
+const MOMENTUM_ONLY_5M = false;       // test both 5m and 15m to compare
+const MOMENTUM_MIN_ENTRY_PRICE = 0.80; // STRATEGY A: entry >= 80¢
 
 // ─── State ────────────────────────────────────────────────────────────────────
 let state = loadState();
@@ -53,7 +53,7 @@ let lastClobReq = 0;
 
 // ─── Momentum Paper Trading State ────────────────────────────────────────────
 let momentumPortfolio = {
-  balance: 10000,
+  balance: 100,
   totalPnl: 0,
   trades: 0,
   wins: 0,
@@ -65,7 +65,7 @@ const momentumBetted = new Set(); // slugs we've already bet on (avoid double-be
 
 // ─── Late-Snipe Paper Trading State ──────────────────────────────────────────
 let snipePortfolio = {
-  balance: 10000,
+  balance: 100,
   totalPnl: 0,
   trades: 0,
   wins: 0,
@@ -219,55 +219,145 @@ async function rateLimitedFetch(url, type) {
   }
 }
 
-// ─── Binance WebSocket for real-time BTC price ────────────────────────────────
-let binanceWs = null;
-let binanceReconnectTimer = null;
+// ─── Polymarket Live WebSocket (Chainlink BTC + real-time trades) ─────────────
+let polyWs = null;
+let polyReconnectTimer = null;
+let subscribedSlugs = new Set(); // track which event slugs we're subscribed to
 
-function connectBinance() {
+function connectPolymarketWS() {
   try {
-    if (binanceWs) { try { binanceWs.close(); } catch {} }
-    clearTimeout(binanceReconnectTimer);
+    if (polyWs) { try { polyWs.close(); } catch {} }
+    clearTimeout(polyReconnectTimer);
+    subscribedSlugs.clear();
 
-    console.log('[BINANCE] Connecting to wss://stream.binance.com:9443/ws/btcusdt@trade');
-    binanceWs = new WsClient('wss://stream.binance.com:9443/ws/btcusdt@trade');
+    console.log('[POLY-WS] Connecting to', POLYMARKET_WS_URL);
+    polyWs = new WsClient(POLYMARKET_WS_URL);
 
-    binanceWs.on('open', () => {
-      console.log('[BINANCE] Connected - receiving real-time BTC prices');
+    polyWs.on('open', () => {
+      console.log('[POLY-WS] Connected - subscribing to Chainlink BTC prices');
+      // Subscribe to Chainlink BTC/USD price feed (resolution source)
+      const btcSub = JSON.stringify({
+        action: 'subscribe',
+        subscriptions: [{
+          topic: 'crypto_prices_chainlink',
+          type: 'update',
+          filters: JSON.stringify({ symbol: 'btc/usd' }),
+        }],
+      });
+      polyWs.send(btcSub);
+      // Subscribe to any currently known market slugs
+      resubscribeAllMarkets();
     });
 
-    binanceWs.on('message', (raw) => {
+    polyWs.on('message', (raw) => {
       try {
-        const data = JSON.parse(raw.toString());
-        const price = parseFloat(data.p);
-        if (!price || isNaN(price)) return;
-
-        const prev = btcPrice;
-        btcPrice = price;
-
-        // Throttle history to ~1 entry per second
-        const now = Date.now();
-        const lastEntry = btcHistory[btcHistory.length - 1];
-        if (!lastEntry || now - lastEntry.time >= 1000) {
-          btcHistory.push({ time: now, price });
-          if (btcHistory.length > BTC_HISTORY_MAX) {
-            btcHistory = btcHistory.slice(-BTC_HISTORY_MAX);
+        const msg = raw.toString();
+        // Handle non-JSON messages (PING/PONG keepalive)
+        if (!msg.startsWith('{') && !msg.startsWith('[')) {
+          if (msg === 'PING') {
+            try { polyWs.send('PONG'); } catch {}
           }
+          return;
         }
+        const data = JSON.parse(msg);
+        handlePolyMessage(data);
       } catch {}
     });
 
-    binanceWs.on('close', () => {
-      console.log('[BINANCE] Disconnected, reconnecting in 5s...');
-      binanceReconnectTimer = setTimeout(connectBinance, 5000);
+    polyWs.on('close', () => {
+      console.log('[POLY-WS] Disconnected, reconnecting in 5s...');
+      subscribedSlugs.clear();
+      polyReconnectTimer = setTimeout(connectPolymarketWS, 5000);
     });
 
-    binanceWs.on('error', (err) => {
-      console.warn('[BINANCE] WS error:', err.message);
-      try { binanceWs.close(); } catch {}
+    polyWs.on('error', (err) => {
+      console.warn('[POLY-WS] WS error:', err.message);
+      try { polyWs.close(); } catch {}
     });
+
+    // Send periodic ping to keep alive
+    polyWs._keepAlive = setInterval(() => {
+      if (polyWs && polyWs.readyState === 1) {
+        try { polyWs.send('PING'); } catch {}
+      }
+    }, 30000);
   } catch (e) {
-    console.error('[BINANCE] Connection failed:', e.message);
-    binanceReconnectTimer = setTimeout(connectBinance, 5000);
+    console.error('[POLY-WS] Connection failed:', e.message);
+    polyReconnectTimer = setTimeout(connectPolymarketWS, 5000);
+  }
+}
+
+function handlePolyMessage(data) {
+  // Chainlink BTC price update
+  if (data.topic === 'crypto_prices_chainlink' || data.type === 'crypto_prices_chainlink') {
+    const payload = data.payload || data;
+    const price = parseFloat(payload.value || payload.price);
+    if (!price || isNaN(price)) return;
+
+    btcPrice = price;
+
+    // Throttle history to ~1 entry per second
+    const now = Date.now();
+    const lastEntry = btcHistory[btcHistory.length - 1];
+    if (!lastEntry || now - lastEntry.time >= 1000) {
+      btcHistory.push({ time: now, price });
+      if (btcHistory.length > BTC_HISTORY_MAX) {
+        btcHistory = btcHistory.slice(-BTC_HISTORY_MAX);
+      }
+    }
+    return;
+  }
+
+  // Real-time trade (orders_matched) from activity stream
+  if (data.topic === 'activity' || data.type === 'orders_matched') {
+    const payload = data.payload || data;
+    if (!payload) return;
+
+    const outcome = payload.outcome; // 'Up' or 'Down'
+    const side = payload.side;       // 'BUY' or 'SELL'
+    const price = parseFloat(payload.price);
+    const slug = payload.event_slug || payload.market_slug || data.event_slug;
+
+    if (!outcome || !price || isNaN(price)) return;
+
+    // Update the matching active market's last trade price
+    for (const market of activeMarkets) {
+      if (market.slug === slug || (slug && market.slug.includes(slug))) {
+        if (outcome === 'Up') {
+          market.upLastPrice = price;
+        } else if (outcome === 'Down') {
+          market.downLastPrice = price;
+        }
+        market.livePriceTime = Date.now();
+        break;
+      }
+    }
+    return;
+  }
+}
+
+// Subscribe to activity stream for a specific event slug
+function subscribeToMarketActivity(slug) {
+  if (!polyWs || polyWs.readyState !== 1) return;
+  if (subscribedSlugs.has(slug)) return;
+
+  const sub = JSON.stringify({
+    action: 'subscribe',
+    subscriptions: [{
+      topic: 'activity',
+      type: 'orders_matched',
+      filters: JSON.stringify({ event_slug: slug }),
+    }],
+  });
+  polyWs.send(sub);
+  subscribedSlugs.add(slug);
+  console.log(`[POLY-WS] Subscribed to trades for ${slug}`);
+}
+
+// Re-subscribe all active market slugs (after reconnect or market discovery)
+function resubscribeAllMarkets() {
+  for (const market of activeMarkets) {
+    subscribeToMarketActivity(market.slug);
   }
 }
 
@@ -351,117 +441,7 @@ async function fetchOrderbook(tokenId) {
   }
 }
 
-// ─── Direct fetch for last-trade-price (no rate limiting, ~50ms response) ────
-async function fetchLastTradePrice(tokenId) {
-  try {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 5000);
-    const res = await fetch(`${CLOB_API}/last-trade-price?token_id=${tokenId}`, { signal: controller.signal });
-    clearTimeout(timeout);
-    if (!res.ok) return null;
-    return await res.json();
-  } catch {
-    return null;
-  }
-}
-
-// ─── Rate-limited CLOB fetch for midpoint/buy/sell (uses clob rate limit) ────
-async function fetchClobPrice(endpoint, tokenId, params) {
-  try {
-    let url = `${CLOB_API}/${endpoint}?token_id=${tokenId}`;
-    if (params) url += `&${params}`;
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 5000);
-    const res = await fetch(url, { signal: controller.signal });
-    clearTimeout(timeout);
-    if (!res.ok) return null;
-    return await res.json();
-  } catch {
-    return null;
-  }
-}
-
-// ─── Live last-trade-price fetch (parallel, no rate limit) ───────────────────
-async function fetchLivePrices(market) {
-  if (!market.clobTokenIds || market.clobTokenIds.length < 2) return;
-  const upToken = market.clobTokenIds[0];
-  const downToken = market.clobTokenIds[1];
-  if (!upToken || !downToken || upToken === downToken) return;
-
-  // Fetch BOTH tokens' last-trade-price in PARALLEL - no rate limit delay
-  const [upLastRes, downLastRes] = await Promise.all([
-    fetchLastTradePrice(upToken),
-    fetchLastTradePrice(downToken),
-  ]);
-
-  // Last trade price is the PRIMARY display price (matches Polymarket's "Up Xc" / "Down Xc")
-  const upLastVal = upLastRes?.price != null ? parseFloat(upLastRes.price) : null;
-  const downLastVal = downLastRes?.price != null ? parseFloat(downLastRes.price) : null;
-  market.upLastPrice = upLastVal && upLastVal > 0 ? upLastVal : null;
-  market.downLastPrice = downLastVal && downLastVal > 0 ? downLastVal : null;
-  market.livePriceTime = Date.now();
-}
-
-// ─── Secondary price data (midpoint, buy/sell) - fetched less frequently ─────
-async function fetchSecondaryPrices(market) {
-  if (!market.clobTokenIds || market.clobTokenIds.length < 2) return;
-  const upToken = market.clobTokenIds[0];
-  const downToken = market.clobTokenIds[1];
-  if (!upToken || !downToken || upToken === downToken) return;
-
-  const [upMidRes, downMidRes, upBuyRes, upSellRes, downBuyRes, downSellRes] = await Promise.all([
-    fetchClobPrice('midpoint', upToken),
-    fetchClobPrice('midpoint', downToken),
-    fetchClobPrice('price', upToken, 'side=buy'),
-    fetchClobPrice('price', upToken, 'side=sell'),
-    fetchClobPrice('price', downToken, 'side=buy'),
-    fetchClobPrice('price', downToken, 'side=sell'),
-  ]);
-
-  market.upMid = upMidRes?.mid != null ? parseFloat(upMidRes.mid) : null;
-  market.downMid = downMidRes?.mid != null ? parseFloat(downMidRes.mid) : null;
-
-  const upBuyVal = upBuyRes?.price != null ? parseFloat(upBuyRes.price) : null;
-  const upSellVal = upSellRes?.price != null ? parseFloat(upSellRes.price) : null;
-  const downBuyVal = downBuyRes?.price != null ? parseFloat(downBuyRes.price) : null;
-  const downSellVal = downSellRes?.price != null ? parseFloat(downSellRes.price) : null;
-  market.upBuy = upBuyVal && upBuyVal > 0 ? upBuyVal : null;
-  market.upSell = upSellVal && upSellVal > 0 ? upSellVal : null;
-  market.downBuy = downBuyVal && downBuyVal > 0 ? downBuyVal : null;
-  market.downSell = downSellVal && downSellVal > 0 ? downSellVal : null;
-}
-
-// ─── Live Price Loop (every 1s - last-trade-price only, parallel, no rate limit)
-async function livePriceLoop() {
-  while (true) {
-    try {
-      const active = activeMarkets.filter(m => new Date(m.endDate).getTime() > Date.now());
-      // Fetch all markets' last-trade-prices in parallel
-      await Promise.all(active.map(market => fetchLivePrices(market)));
-      const count = active.filter(m => m.livePriceTime).length;
-      if (count > 0) console.log(`[LIVE PRICES] Updated ${count} markets (1s interval)`);
-    } catch (e) {
-      console.error('[LIVE PRICES] Error:', e.message);
-    }
-    await sleep(LIVE_PRICE_INTERVAL);
-  }
-}
-
-// ─── Secondary Price Loop (every 10s - midpoint, buy/sell for spread info) ───
-async function secondaryPriceLoop() {
-  while (true) {
-    try {
-      for (const market of activeMarkets) {
-        const endTime = new Date(market.endDate).getTime();
-        if (endTime <= Date.now()) continue;
-        await fetchSecondaryPrices(market);
-      }
-    } catch (e) {
-      console.error('[SECONDARY PRICES] Error:', e.message);
-    }
-    await sleep(10000);
-  }
-}
+// (Live prices + secondary prices now handled by Polymarket WS activity stream)
 
 // ─── Arb Calc & Paper Trading ─────────────────────────────────────────────────
 function calcArbitrage(upBook, downBook, outcomePrices) {
@@ -628,74 +608,147 @@ function checkMomentumBets() {
   }
 }
 
+// Find BTC price closest to a target time from btcHistory
+function getHistoricalBtcPrice(targetTime) {
+  if (btcHistory.length === 0) return null;
+  let closest = btcHistory[0];
+  let minDiff = Math.abs(targetTime - closest.time);
+  for (const entry of btcHistory) {
+    const diff = Math.abs(targetTime - entry.time);
+    if (diff < minDiff) {
+      minDiff = diff;
+      closest = entry;
+    }
+  }
+  // Only use if within 5 seconds of target
+  if (minDiff <= 5000) return { price: closest.price, source: 'btcHistory', diff: minDiff };
+  return null;
+}
+
+// Try to get Polymarket resolution via gamma API
+async function fetchPolymarketResolution(slug) {
+  try {
+    const data = await rateLimitedFetch(`${GAMMA_API}/events?slug=${slug}`, 'gamma');
+    if (!data || data.length === 0) return null;
+    const event = data[0];
+    if (!event.markets || event.markets.length === 0) return null;
+    const m = event.markets[0];
+    if (m.closed || m.resolved) {
+      // winner is typically "Up" or "Down"
+      return { winner: m.winner, source: 'polymarket' };
+    }
+    return null;
+  } catch (e) {
+    console.warn(`[RESOLVE] Failed to fetch Polymarket resolution for ${slug}: ${e.message}`);
+    return null;
+  }
+}
+
+// Get close BTC price: prefer historical price at endTime, then Polymarket resolution, then current price fallback
+async function getResolutionPrice(bet) {
+  const endTime = new Date(bet.endDate).getTime();
+
+  // 1. Try btcHistory for price at exact market end time
+  const historical = getHistoricalBtcPrice(endTime);
+  if (historical) {
+    console.log(`[RESOLVE] ${bet.slug}: Using btcHistory price $${historical.price} (${historical.diff}ms from endTime)`);
+    return { price: historical.price, source: 'btcHistory' };
+  }
+
+  // 2. Try Polymarket resolution
+  const polyRes = await fetchPolymarketResolution(bet.slug);
+  if (polyRes && polyRes.winner) {
+    console.log(`[RESOLVE] ${bet.slug}: Using Polymarket resolution → winner: ${polyRes.winner}`);
+    return { winner: polyRes.winner, source: 'polymarket' };
+  }
+
+  // 3. Fallback to current BTC price
+  if (btcPrice) {
+    console.log(`[RESOLVE] ${bet.slug}: WARNING using currentPrice (fallback) $${btcPrice}`);
+    return { price: btcPrice, source: 'currentPrice (fallback)' };
+  }
+
+  return null;
+}
+
+function finalizeBet(portfolio, tradesFile, label, bet, actualOutcome, won, closeBtcPrice, resolutionSource) {
+  let pnl;
+  if (won) {
+    const shares = bet.size / bet.entryPrice;
+    pnl = shares - bet.size;
+    portfolio.balance += shares;
+    portfolio.wins++;
+  } else {
+    pnl = -(bet.size * bet.entryPrice);
+    portfolio.losses++;
+  }
+
+  portfolio.totalPnl += pnl;
+
+  const refChange = bet.referencePrice && closeBtcPrice
+    ? ((closeBtcPrice - bet.referencePrice) / bet.referencePrice) * 100
+    : null;
+
+  const result = {
+    ...bet,
+    action: 'CLOSE',
+    closeBtcPrice,
+    resolutionSource,
+    refChangePct: refChange !== null ? refChange.toFixed(4) : 'N/A',
+    actualOutcome,
+    won,
+    pnl: pnl.toFixed(2),
+    balanceAfter: portfolio.balance.toFixed(2),
+    winrate: ((portfolio.wins / (portfolio.wins + portfolio.losses)) * 100).toFixed(1),
+  };
+
+  portfolio.closedBets.push(result);
+  appendJsonl(tradesFile, result);
+
+  const emoji = won ? '✅' : '❌';
+  console.log(`[${label}] ${emoji} ${bet.direction} on ${bet.slug} → ${actualOutcome} (via ${resolutionSource}) | PnL: $${pnl.toFixed(2)} | Total PnL: $${portfolio.totalPnl.toFixed(2)} | Winrate: ${result.winrate}% (${portfolio.wins}W/${portfolio.losses}L) | Balance: $${portfolio.balance.toFixed(2)}`);
+}
+
+async function resolveWithPrice(portfolio, tradesFile, label, bet) {
+  const resolution = await getResolutionPrice(bet);
+  if (!resolution) {
+    portfolio.balance += bet.size * bet.entryPrice;
+    console.log(`[${label}] REFUND ${bet.slug} - no resolution data`);
+    return;
+  }
+
+  if (resolution.winner) {
+    const actualOutcome = resolution.winner;
+    const won = actualOutcome === bet.direction;
+    finalizeBet(portfolio, tradesFile, label, bet, actualOutcome, won, btcPrice, resolution.source);
+    return;
+  }
+
+  const closeBtcPrice = resolution.price;
+  const refChange = bet.referencePrice && closeBtcPrice
+    ? ((closeBtcPrice - bet.referencePrice) / bet.referencePrice) * 100
+    : null;
+
+  if (refChange === null) {
+    portfolio.balance += bet.size * bet.entryPrice;
+    console.log(`[${label}] REFUND ${bet.slug} - no reference data`);
+    return;
+  }
+
+  const actualOutcome = refChange >= 0 ? 'Up' : 'Down';
+  const won = actualOutcome === bet.direction;
+  finalizeBet(portfolio, tradesFile, label, bet, actualOutcome, won, closeBtcPrice, resolution.source);
+}
+
 function resolveMomentumBets() {
   const now = Date.now();
-  momentumPortfolio.openBets = momentumPortfolio.openBets.filter(bet => {
+  const kept = [];
+  for (const bet of momentumPortfolio.openBets) {
     const endTime = new Date(bet.endDate).getTime();
-    if (now <= endTime + 90000) return true; // not resolved yet
-
-    // Determine actual outcome
-    const closeBtcPrice = btcPrice;
-    const refChange = bet.referencePrice && closeBtcPrice
-      ? ((closeBtcPrice - bet.referencePrice) / bet.referencePrice) * 100
-      : null;
-
-    if (refChange === null) {
-      // Can't determine outcome, refund
-      momentumPortfolio.balance += bet.size * bet.entryPrice;
-      console.log(`[MOMENTUM] REFUND ${bet.slug} - no reference data`);
-      return false;
-    }
-
-    const actualOutcome = refChange >= 0 ? 'Up' : 'Down';
-    const won = actualOutcome === bet.direction;
-
-    let pnl;
-    if (won) {
-      // Payout = size (bet $50 at 0.5 → get 100 shares → payout $100 if win, but we spent $25)
-      // Actually: we buy `shares = betSize` worth of outcome tokens at entryPrice
-      // Shares bought = betSize (dollar amount) / no, cost = betSize * entryPrice
-      // If win: payout = betSize (each share pays $1, we have betSize*entryPrice cost for betSize*entryPrice/entryPrice...
-      // Simpler: cost = betSize * entryPrice. If win, payout = betSize. pnl = betSize - cost.
-      const cost = bet.size * bet.entryPrice;
-      const payout = bet.size; // $1 per share, we bought bet.size shares... no.
-      // Let me reconsider: we spend $betSize to buy shares at entryPrice.
-      // Shares = betSize / entryPrice. If win, each share pays $1. Payout = betSize / entryPrice.
-      // Wait no - on Polymarket, you spend e.g. 50¢ per share. If you win, each share pays $1.
-      // So: cost = $betSize total. Shares = betSize / entryPrice. Payout = shares * $1 = betSize / entryPrice.
-      const shares = bet.size / bet.entryPrice;
-      pnl = shares - bet.size; // payout minus what we originally "spent" ($betSize)
-      momentumPortfolio.balance += shares; // get payout
-      momentumPortfolio.wins++;
-    } else {
-      // Lose everything
-      pnl = -(bet.size * bet.entryPrice); // already deducted
-      // Actually we already deducted betSize * entryPrice from balance. Loss = that amount.
-      pnl = -(bet.size * bet.entryPrice);
-      momentumPortfolio.losses++;
-    }
-
-    momentumPortfolio.totalPnl += pnl;
-
-    const result = {
-      ...bet,
-      action: 'CLOSE',
-      closeBtcPrice,
-      refChangePct: refChange.toFixed(4),
-      actualOutcome,
-      won,
-      pnl: pnl.toFixed(2),
-      balanceAfter: momentumPortfolio.balance.toFixed(2),
-      winrate: ((momentumPortfolio.wins / (momentumPortfolio.wins + momentumPortfolio.losses)) * 100).toFixed(1),
-    };
-
-    momentumPortfolio.closedBets.push(result);
-    appendJsonl(MOMENTUM_TRADES_FILE, result);
-
-    const emoji = won ? '✅' : '❌';
-    console.log(`[MOMENTUM] ${emoji} ${bet.direction} on ${bet.slug} → ${actualOutcome} | PnL: $${pnl.toFixed(2)} | Total PnL: $${momentumPortfolio.totalPnl.toFixed(2)} | Winrate: ${result.winrate}% (${momentumPortfolio.wins}W/${momentumPortfolio.losses}L) | Balance: $${momentumPortfolio.balance.toFixed(2)}`);
-    return false;
-  });
+    if (now <= endTime + 90000) { kept.push(bet); continue; }
+    resolveWithPrice(momentumPortfolio, MOMENTUM_TRADES_FILE, 'MOMENTUM', bet);
+  }
+  momentumPortfolio.openBets = kept;
 }
 
 // ─── Late-Snipe Paper Trading Logic ──────────────────────────────────────────
@@ -703,7 +756,7 @@ function lateSnipeTrade() {
   if (!btcPrice) return;
 
   for (const market of activeMarkets) {
-    if (market.type !== '5m') continue;
+    // Test both 5m and 15m
     if (snipeBetted.has(market.slug)) continue;
     if (!market.referencePrice) continue;
 
@@ -756,56 +809,13 @@ function lateSnipeTrade() {
 
 function resolveSnipeBets() {
   const now = Date.now();
-  snipePortfolio.openBets = snipePortfolio.openBets.filter(bet => {
+  const kept = [];
+  for (const bet of snipePortfolio.openBets) {
     const endTime = new Date(bet.endDate).getTime();
-    if (now <= endTime + 90000) return true; // not resolved yet
-
-    const closeBtcPrice = btcPrice;
-    const refChange = bet.referencePrice && closeBtcPrice
-      ? ((closeBtcPrice - bet.referencePrice) / bet.referencePrice) * 100
-      : null;
-
-    if (refChange === null) {
-      snipePortfolio.balance += bet.size * bet.entryPrice;
-      console.log(`[SNIPE] REFUND ${bet.slug} - no reference data`);
-      return false;
-    }
-
-    const actualOutcome = refChange >= 0 ? 'Up' : 'Down';
-    const won = actualOutcome === bet.direction;
-
-    let pnl;
-    if (won) {
-      const shares = bet.size / bet.entryPrice;
-      pnl = shares - bet.size;
-      snipePortfolio.balance += shares;
-      snipePortfolio.wins++;
-    } else {
-      pnl = -(bet.size * bet.entryPrice);
-      snipePortfolio.losses++;
-    }
-
-    snipePortfolio.totalPnl += pnl;
-
-    const result = {
-      ...bet,
-      action: 'CLOSE',
-      closeBtcPrice,
-      refChangePct: refChange.toFixed(4),
-      actualOutcome,
-      won,
-      pnl: pnl.toFixed(2),
-      balanceAfter: snipePortfolio.balance.toFixed(2),
-      winrate: ((snipePortfolio.wins / (snipePortfolio.wins + snipePortfolio.losses)) * 100).toFixed(1),
-    };
-
-    snipePortfolio.closedBets.push(result);
-    appendJsonl(SNIPE_TRADES_FILE, result);
-
-    const emoji = won ? '✅' : '❌';
-    console.log(`[SNIPE] ${emoji} ${bet.direction} on ${bet.slug} → ${actualOutcome} | PnL: $${pnl.toFixed(2)} | Total PnL: $${snipePortfolio.totalPnl.toFixed(2)} | Winrate: ${result.winrate}% (${snipePortfolio.wins}W/${snipePortfolio.losses}L) | Balance: $${snipePortfolio.balance.toFixed(2)}`);
-    return false;
-  });
+    if (now <= endTime + 90000) { kept.push(bet); continue; }
+    resolveWithPrice(snipePortfolio, SNIPE_TRADES_FILE, 'SNIPE', bet);
+  }
+  snipePortfolio.openBets = kept;
 }
 
 // ─── Snipe Loop (every 5s - needs to be fast to catch the window) ────────────
@@ -851,6 +861,8 @@ async function marketDiscoveryLoop() {
       activeMarkets = discovered;
       // Track market opens for historical data
       discovered.forEach(m => trackMarketOpen(m));
+      // Subscribe to WS activity for any new market slugs
+      resubscribeAllMarkets();
       console.log(`[DISCOVERY] Found ${discovered.length} active markets (${discovered.filter(m=>m.type==='5m').length} x 5m, ${discovered.filter(m=>m.type==='15m').length} x 15m)`);
     } catch (e) {
       console.error('[DISCOVERY] Error:', e.message);
@@ -1075,25 +1087,24 @@ process.on('unhandledRejection', (err) => {
 server.listen(PORT, '0.0.0.0', () => {
   console.log(`
   ╔══════════════════════════════════════════════╗
-  ║  Polymarket BTC Arb Bot v4.0                 ║
+  ║  Polymarket BTC Arb Bot v5.0                 ║
   ║  HTTP:  http://localhost:${PORT}               ║
   ║  WS:    ws://localhost:${PORT}                 ║
-  ║  BTC:   Binance real-time WebSocket          ║
-  ║  Live prices: 1s  | Orderbooks: 60s          ║
-  ║  Markets: 30s scan                           ║
+  ║  BTC:   Polymarket Chainlink (live WS)       ║
+  ║  Trades: Polymarket activity stream          ║
+  ║  Markets: 30s scan  | Orderbooks: 60s        ║
   ╚══════════════════════════════════════════════╝
   `);
 
   // Start all systems
-  connectBinance();
+  connectPolymarketWS();
   startBroadcastLoop();
   marketDiscoveryLoop();
-  // Delay price loops to let market discovery populate first
-  setTimeout(() => livePriceLoop(), 8000);
-  setTimeout(() => secondaryPriceLoop(), 10000);
+  // Delay trading/orderbook loops to let market discovery populate first
   setTimeout(() => orderbookLoop(), 15000);
   setTimeout(() => momentumTradingLoop(), 20000);
   setTimeout(() => snipeTradingLoop(), 22000);
   console.log('[MOMENTUM] Paper trading active - 5m markets, threshold ≥0.05%');
   console.log('[SNIPE] Late-snipe paper trading active - 5m markets, last 10-60s, delta ≥0.03%');
 });
+

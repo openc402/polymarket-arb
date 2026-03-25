@@ -1,0 +1,26 @@
+MAJOR UPGRADE: Replace ALL price sources with Polymarket's live WebSocket.
+
+DISCOVERY: wss://ws-live-data.polymarket.com/ is Polymarket's internal live data WebSocket. No auth needed.
+
+SUBSCRIPTION FORMAT (send JSON after open):
+{"action":"subscribe","subscriptions":[{"topic":"activity","type":"orders_matched","filters":"{\"event_slug\":\"SLUG_HERE\"}"},{"topic":"crypto_prices_chainlink","type":"update","filters":"{\"symbol\":\"btc/usd\"}"}]}
+
+DATA RECEIVED:
+1. crypto_prices_chainlink: {payload:{value:71603.86, timestamp:1774447350000}} — every 1 second, exact BTC price used for resolution
+2. activity/orders_matched: {payload:{outcome:'Up'/'Down', side:'BUY'/'SELL', price:0.68, size:56}} — real-time trades
+
+CHANGES to server.js:
+1. REPLACE Binance WebSocket with Chainlink prices from Polymarket WS (this IS the resolution price source!)
+2. REPLACE /last-trade-price REST polling — we get every trade in real-time via activity stream
+3. Track latest trade prices for Up and Down from activity messages (store last BUY price per outcome)
+4. When market slug changes (new 5m/15m window), send new subscribe message for new slug
+5. Subscribe to BOTH current 5m and 15m event slugs simultaneously
+6. Keep WS alive: handle reconnection on close/error, parse non-JSON messages gracefully (PING/PONG)
+7. Remove Binance WS connection code entirely
+8. Store Chainlink price in btcHistory AND as btcPrice for chart/resolution
+9. Update referencePrice: on market discovery, store the startPrice from gamma API
+10. Resolution must use Chainlink btcHistory price at endDate (not Binance)
+
+IMPORTANT: Keep ALL existing trading logic (momentum + snipe strategies, portfolios, JSONL logging). Only change the DATA SOURCE.
+
+After changes: npx next build, git add -A, git commit -m "Live Polymarket WS: Chainlink + real-time trades", git push origin main
